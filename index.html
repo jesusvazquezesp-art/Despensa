@@ -5861,7 +5861,7 @@ body.dark #hc10Panel #hc10Log .muted{
 </div>
 <button onclick="runBtn(this, 'Agregando al carrito...', agregarAlCarrito)">➕ Agregar al carrito</button></div><h3>Lista próxima a terminar</h3><div id="listaBajosCarrito"></div><h3>Agregar rápido por producto</h3><div id="listaRapidaCarrito"></div><h3>⏰ Pospuestos</h3><div id="listaPospuestos"></div><h3>Carrito actual</h3><div class="cart-row table-head"><div>Producto</div><div>Cant.</div><div>Precio</div><div class="hide-m">Total</div><div></div></div><div id="listaCarrito"></div><button onclick="runBtn(this, 'Guardando compra, espere servidor...', confirmarCarrito)">✅ Confirmar compra y subir inventario</button><button class="gris" onclick="vaciarCarrito()">Vaciar carrito</button></section>
 
-    <section id="consumo" class="card panel oculto"><h2>🍽 Registrar consumo</h2><select id="productoConsumo"></select><input id="cantidadConsumo" type="number" step="0.01" placeholder="Cantidad consumida"><input id="notaConsumo" placeholder="Nota: comida, limpieza, cena..."><button class="amarillo" onclick="runBtn(this, 'Descontando inventario, espere servidor...', registrarConsumo)">Descontar inventario</button>
+    <section id="consumo" class="card panel oculto"><h2>🍽 Registrar consumo</h2><select id="productoConsumo"></select><input id="cantidadConsumo" type="number" step="0.01" placeholder="Cantidad consumida"><label class="muted">Fecha y hora del consumo:</label><input id="fechaHoraConsumo" type="datetime-local"><input id="notaConsumo" placeholder="Nota: comida, limpieza, cena..."><button class="amarillo" onclick="runBtn(this, 'Descontando inventario, espere servidor...', registrarConsumo)">Descontar inventario</button>
 
 
 
@@ -23291,6 +23291,471 @@ body.dark #comidaFueraPanel #cfConsejo{
   }
 </style>
 
+
+
+<!-- HC 14.22 PARTE 2: limpieza de recargas, render y sincronización por etapas -->
+<script id="hc1422-optimizacion-parte2">
+/*
+  Parte 2:
+  - Evita redibujos repetidos de toda la pantalla.
+  - Carga primero lo esencial: productos, usuarios, categorías y carrito.
+  - Historial, consumos, gastos y reportes se cargan en segundo plano.
+  - Las acciones normales usan sincronización ligera, no descarga completa.
+*/
+(function(){
+  if(window.HC1422_OPTIMIZACION_PARTE2)return;
+  window.HC1422_OPTIMIZACION_PARTE2=true;
+
+  const arr=v=>Array.isArray(v)?v:[];
+  const now=()=>Date.now();
+  const num=v=>Number(v||0)||0;
+  const setEstado=t=>{try{if(typeof setSync==='function')setSync(t)}catch(e){}};
+  function timeout(p,ms,nombre){
+    let t;
+    return Promise.race([
+      p,
+      new Promise((_,rej)=>{t=setTimeout(()=>rej(new Error((nombre||'Operación')+' tardó demasiado')),ms)})
+    ]).finally(()=>clearTimeout(t));
+  }
+  function asignarGlobal(nombre,valor){try{window[nombre]=valor}catch(e){} try{eval(nombre+'=window[nombre]')}catch(e){}}
+  function dedupePorIdNombre(lista){
+    const seen=new Set();
+    return arr(lista).filter(x=>{
+      const k=String(x.id||x.producto_id||'')+'|'+String(x.nombre||x.producto||'').trim().toLowerCase()+'|'+String(x.tienda||x.tienda_preferida||'').trim().toLowerCase();
+      if(seen.has(k))return false;
+      seen.add(k); return true;
+    });
+  }
+  function dedupeCarrito(lista){
+    const seen=new Set();
+    return arr(lista).filter(x=>{
+      const k=String(x.id||x.cloud_id||x.producto_id||'')+'|'+String(x.nombre||x.producto||'').trim().toLowerCase()+'|'+String(x.tienda||'Sin tienda').trim().toLowerCase()+'|'+String(x.estado||'pendiente');
+      if(seen.has(k))return false;
+      seen.add(k); return true;
+    });
+  }
+  function ponerCarrito(lista){
+    lista=dedupeCarrito(lista);
+    asignarGlobal('carrito',lista);
+    asignarGlobal('carritoActual',lista);
+    asignarGlobal('itemsCarrito',lista);
+    try{localStorage.removeItem('despensaCarrito')}catch(e){}
+    return lista;
+  }
+
+  // 1) Redibujar una sola vez aunque varias funciones llamen actualizarPantalla seguidas.
+  const actualizarPantallaOriginal=(typeof actualizarPantalla==='function')?actualizarPantalla:window.actualizarPantalla;
+  let renderTimer=null, renderForzado=false, renderEnCurso=false, ultimoRender=0;
+  function renderLigero(){
+    const panel=(typeof panelActual!=='undefined'?panelActual:(location.hash||'')).replace('#','');
+    try{if(typeof cargarSelects==='function')cargarSelects()}catch(e){}
+    try{if(typeof mostrarInventario==='function' && (!panel||panel==='inventario'||panel==='carrito'||document.getElementById('listaInventario')))mostrarInventario()}catch(e){}
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito()}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido()}catch(e){}
+    try{if(typeof hc1418ActualizarTotalesCarrito==='function')hc1418ActualizarTotalesCarrito()}catch(e){}
+    try{if(typeof hc1421RefrescarVisualLigero==='function')hc1421RefrescarVisualLigero()}catch(e){}
+  }
+  function programarRender(completo){
+    if(renderTimer)clearTimeout(renderTimer);
+    renderForzado=renderForzado||!!completo;
+    renderTimer=setTimeout(()=>{
+      renderTimer=null;
+      if(renderEnCurso)return;
+      renderEnCurso=true;
+      try{
+        const panel=(typeof panelActual!=='undefined'?panelActual:(location.hash||'')).replace('#','');
+        const pesado=renderForzado || panel==='reportes'||panel==='gastos'||panel==='inteligencia'||panel==='presupuesto';
+        if(pesado && typeof actualizarPantallaOriginal==='function')actualizarPantallaOriginal();
+        else renderLigero();
+        ultimoRender=now();
+      }catch(e){console.warn('HC14.22 render:',e)}
+      finally{renderForzado=false;renderEnCurso=false;}
+    },60);
+  }
+  if(typeof actualizarPantallaOriginal==='function' && !actualizarPantallaOriginal.__hc1422){
+    const nueva=function(opciones){
+      programarRender(opciones===true || (opciones&&opciones.full));
+    };
+    nueva.__hc1422=true;
+    try{window.actualizarPantalla=nueva}catch(e){}
+    try{actualizarPantalla=nueva}catch(e){}
+    window.hc1422ActualizarPantallaOriginal=actualizarPantallaOriginal;
+    window.hc1422RenderAhora=function(completo){
+      if(renderTimer){clearTimeout(renderTimer);renderTimer=null;}
+      try{(completo&&typeof actualizarPantallaOriginal==='function')?actualizarPantallaOriginal():renderLigero()}catch(e){}
+    };
+  }
+
+  // 2) Carga rápida por etapas. Evita el Promise.all gigante para acciones comunes.
+  let baseCargada=false;
+  let backgroundActivo=false;
+  let ultimaCargaHistorial=0;
+  async function leerCarrito(){
+    if(typeof cargarCarritoSupabase==='function'){
+      const r=await cargarCarritoSupabase();
+      return dedupeCarrito(Array.isArray(r)?r:(window.carrito||[]));
+    }
+    if(typeof db==='undefined'||!db)return dedupeCarrito(window.carrito||[]);
+    const r=await db.from('home_carrito_compartido').select('*').eq('activo',true).eq('estado','pendiente').order('created_at',{ascending:false});
+    if(r.error)throw r.error;
+    return dedupeCarrito(r.data||[]);
+  }
+  async function cargarBaseRapida(){
+    if(typeof db==='undefined'||!db){programarRender(true);return true;}
+    setEstado(baseCargada?'Actualizando cambios...':'Cargando inventario...');
+    const req=Promise.all([
+      db.from('despensa_productos').select('*').order('nombre'),
+      db.from('despensa_usuarios').select('*').order('usuario'),
+      db.from('despensa_categorias').select('*').order('nombre'),
+      leerCarrito()
+    ]);
+    const [p,u,cat,car]=await timeout(req,14000,'Carga rápida');
+    if(p.error)throw p.error;
+    asignarGlobal('productos',dedupePorIdNombre(p.data||[]));
+    if(!u.error)asignarGlobal('usuarios',u.data||[]);
+    if(!cat.error)asignarGlobal('categorias',cat.data||[]);
+    ponerCarrito(car||[]);
+    baseCargada=true;
+    programarRender(true);
+    setEstado('Estamos en línea 😊');
+    cargarHistorialSegundoPlano();
+    return true;
+  }
+  async function cargarHistorialSegundoPlano(force){
+    if(backgroundActivo)return;
+    if(!force && now()-ultimaCargaHistorial<60000)return;
+    if(typeof db==='undefined'||!db)return;
+    backgroundActivo=true;
+    ultimaCargaHistorial=now();
+    try{
+      const req=Promise.all([
+        db.from('despensa_compras').select('*').order('fecha',{ascending:false}).limit(1200),
+        db.from('despensa_consumos').select('*').order('fecha',{ascending:false}).limit(300),
+        db.from('home_gastos_categorias').select('*').order('nombre'),
+        db.from('home_gastos').select('*, home_gastos_categorias(nombre, icono)').eq('activo',true).order('fecha_proximo_pago',{ascending:true}),
+        db.from('home_gastos_pagos').select('*').order('fecha_pago',{ascending:false}).limit(500)
+      ]);
+      const [c,co,gcat,gh,pg]=await timeout(req,18000,'Historial en segundo plano');
+      if(!c.error)asignarGlobal('compras',c.data||[]);
+      if(!co.error)asignarGlobal('consumos',co.data||[]);
+      if(!gcat.error)asignarGlobal('gastosCategorias',gcat.data||[]);
+      if(!gh.error)asignarGlobal('gastosHogar',gh.data||[]);
+      if(!pg.error)asignarGlobal('pagosHogar',pg.data||[]);
+      programarRender(false);
+    }catch(e){console.warn('HC14.22 historial segundo plano:',e)}
+    finally{backgroundActivo=false;}
+  }
+  window.hc1422CargarBaseRapida=cargarBaseRapida;
+  window.hc1422CargarHistorialSegundoPlano=()=>cargarHistorialSegundoPlano(true);
+
+  const cargarTodoAnterior=(typeof cargarTodo==='function')?cargarTodo:window.cargarTodo;
+  async function cargarTodoOptimizado(opciones){
+    const panel=(typeof panelActual!=='undefined'?panelActual:(location.hash||'')).replace('#','');
+    const requiereHistorial=opciones===true || (opciones&&opciones.full) || panel==='reportes'||panel==='gastos'||panel==='inteligencia'||panel==='presupuesto';
+    try{
+      await cargarBaseRapida();
+      if(requiereHistorial)cargarHistorialSegundoPlano(true);
+      return true;
+    }catch(e){
+      console.warn('HC14.22 carga rápida falló:',e);
+      if(typeof cargarTodoAnterior==='function'){
+        try{return await timeout(cargarTodoAnterior.apply(this,arguments),22000,'Carga de respaldo')}catch(err){console.warn('HC14.22 respaldo falló:',err)}
+      }
+      setEstado('En línea; algunos datos tardaron en sincronizar');
+      programarRender(false);
+      return false;
+    }
+  }
+  cargarTodoOptimizado.__hc1422=true;
+  try{window.cargarTodo=cargarTodoOptimizado}catch(e){}
+  try{cargarTodo=cargarTodoOptimizado}catch(e){}
+
+  // 3) Después de acciones con botón, desbloquear con refresco rápido y mandar historial a segundo plano.
+  const runBtnAnterior=window.runBtn;
+  if(typeof runBtnAnterior==='function' && !runBtnAnterior.__hc1422){
+    window.runBtn=async function(btn,msg,fn){
+      const r=await runBtnAnterior.apply(this,arguments);
+      setTimeout(()=>{cargarBaseRapida().catch(()=>{});},120);
+      return r;
+    };
+    window.runBtn.__hc1422=true;
+    try{runBtn=window.runBtn}catch(e){}
+  }
+
+  // 4) Sincronización manual completa optimizada: primero útil, luego historial.
+  window.hcSincronizacionCompleta=async function(){
+    await cargarBaseRapida();
+    await cargarHistorialSegundoPlano(true);
+    programarRender(true);
+    return true;
+  };
+
+  // 5) Diagnóstico rápido de rendimiento desde consola: hcRendimiento()
+  window.hcRendimiento=function(){
+    return {
+      productos:arr(window.productos||productos).length,
+      carrito:arr(window.carrito||[]).length,
+      compras:arr(window.compras||compras).length,
+      consumos:arr(window.consumos||consumos).length,
+      baseCargada,
+      historialHaceSegundos:ultimaCargaHistorial?Math.round((now()-ultimaCargaHistorial)/1000):null,
+      renderHaceSegundos:ultimoRender?Math.round((now()-ultimoRender)/1000):null
+    };
+  };
+
+  window.addEventListener('load',()=>setTimeout(()=>{
+    try{cargarBaseRapida()}catch(e){}
+  },1000));
+})();
+</script>
+
+
+
+<script>
+/* HC 14.24 - Diagnóstico de tiempos reales al guardar producto */
+(function(){
+  if(window.HC1424_DIAG)return;
+  window.HC1424_DIAG=true;
+
+  const css=document.createElement('style');
+  css.textContent=`
+    #hcDiagBox{position:fixed;left:10px;right:10px;bottom:92px;z-index:99999;background:linear-gradient(135deg,#071827,#123a4a);color:#fff;border:1px solid rgba(125,211,252,.45);border-radius:18px;box-shadow:0 18px 40px rgba(0,0,0,.45);padding:12px;max-height:45vh;overflow:auto;font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:13px;display:none}
+    #hcDiagBox.show{display:block}
+    #hcDiagBox h3{margin:0 0 8px;font-size:16px;color:#a7f3d0}
+    #hcDiagBox .diag-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid rgba(255,255,255,.12);padding:5px 0}
+    #hcDiagBox .diag-row b{color:#fff}
+    #hcDiagBox .diag-ms{font-weight:900;color:#fde68a;white-space:nowrap}
+    #hcDiagBox .diag-ok{color:#86efac}.diag-warn{color:#fca5a5}
+    #hcDiagBox .diag-actions{display:flex;gap:8px;margin-top:10px}
+    #hcDiagBox button{border:0;border-radius:12px;padding:8px 10px;font-weight:800;color:#fff;background:#2563eb}
+    #hcDiagMini{position:fixed;right:12px;bottom:12px;z-index:99998;border:0;border-radius:999px;background:#0f766e;color:#fff;padding:9px 12px;font-weight:900;box-shadow:0 10px 25px rgba(0,0,0,.35)}
+  `;
+  document.head.appendChild(css);
+
+  function ensureBox(){
+    let box=document.getElementById('hcDiagBox');
+    if(!box){
+      box=document.createElement('div');
+      box.id='hcDiagBox';
+      box.innerHTML='<h3>⏱️ Diagnóstico HomeControl</h3><div id="hcDiagEstado">Aún sin prueba.</div><div id="hcDiagLista"></div><div class="diag-actions"><button onclick="hcDiagMostrar()">Ver</button><button onclick="hcDiagCopiar()">Copiar reporte</button><button onclick="hcDiagOcultar()">Cerrar</button></div>';
+      document.body.appendChild(box);
+    }
+    if(!document.getElementById('hcDiagMini')){
+      const mini=document.createElement('button');
+      mini.id='hcDiagMini'; mini.textContent='⏱️ Diagnóstico'; mini.onclick=()=>hcDiagMostrar();
+      document.body.appendChild(mini);
+    }
+    return box;
+  }
+  window.hcDiagMostrar=function(){ensureBox().classList.add('show')};
+  window.hcDiagOcultar=function(){const b=document.getElementById('hcDiagBox'); if(b)b.classList.remove('show')};
+  window.hcDiagCopiar=function(){
+    const txt=(window.hcDiagUltimo||[]).map(x=>`${x.nombre}: ${x.ms} ms`).join('\n');
+    try{navigator.clipboard.writeText(txt); alert('Reporte copiado.');}catch(e){prompt('Copia el reporte:',txt)}
+  };
+  function pintar(titulo,rows,total){
+    ensureBox();
+    window.hcDiagUltimo=rows;
+    const estado=document.getElementById('hcDiagEstado');
+    const lista=document.getElementById('hcDiagLista');
+    if(estado)estado.innerHTML=`<b>${titulo}</b><br>Total medido: <span class="diag-ms">${Math.round(total)} ms</span>`;
+    if(lista)lista.innerHTML=rows.map(r=>`<div class="diag-row"><span>${r.nombre}</span><span class="diag-ms ${r.ms>2500?'diag-warn':'diag-ok'}">${r.ms} ms</span></div>`).join('');
+    hcDiagMostrar();
+    console.table(rows);
+  }
+  async function medir(nombre,fn,rows){
+    const a=performance.now();
+    try{return await fn();}
+    finally{rows.push({nombre,ms:Math.round(performance.now()-a)});}
+  }
+
+  function wrapTime(nombre){
+    const old=window[nombre];
+    if(typeof old!=='function'||old.__hc1424)return;
+    const nuevo=function(...args){
+      const a=performance.now();
+      const res=old.apply(this,args);
+      const fin=()=>{const ms=Math.round(performance.now()-a); console.log(`⏱️ ${nombre}: ${ms} ms`);};
+      if(res&&typeof res.then==='function')return res.finally(fin);
+      fin(); return res;
+    };
+    nuevo.__hc1424=true; window[nombre]=nuevo; try{eval(nombre+'=window[nombre]')}catch(e){}
+  }
+  ['cargarTodo','actualizarPantalla','mostrarInventario','mostrarCarrito','cargarSelects','mostrarAsistente','mostrarReportes'].forEach(wrapTime);
+
+  const originalGuardar=window.guardarProducto || (typeof guardarProducto==='function'?guardarProducto:null);
+  if(typeof originalGuardar==='function'){
+    window.guardarProducto=async function(){
+      const rows=[];
+      const totalIni=performance.now();
+      ensureBox();
+      document.getElementById('hcDiagEstado').innerHTML='⏳ Midiendo guardado de producto...';
+      document.getElementById('hcDiagLista').innerHTML='';
+      hcDiagMostrar();
+
+      const oldAuditar=window.auditar;
+      const oldCargarTodo=window.cargarTodo;
+      const oldActualizar=window.actualizarPantalla;
+      const oldMostrarInv=window.mostrarInventario;
+      const oldMostrarCar=window.mostrarCarrito;
+      const oldSetSync=window.setSync;
+
+      if(typeof window.auditar==='function')window.auditar=(...a)=>medir('Auditoría Supabase',()=>oldAuditar.apply(this,a),rows);
+      if(typeof window.cargarTodo==='function')window.cargarTodo=(...a)=>medir('cargarTodo COMPLETO',()=>oldCargarTodo.apply(this,a),rows);
+      if(typeof window.actualizarPantalla==='function')window.actualizarPantalla=(...a)=>medir('actualizarPantalla COMPLETA',()=>oldActualizar.apply(this,a),rows);
+      if(typeof window.mostrarInventario==='function')window.mostrarInventario=(...a)=>medir('mostrarInventario',()=>oldMostrarInv.apply(this,a),rows);
+      if(typeof window.mostrarCarrito==='function')window.mostrarCarrito=(...a)=>medir('mostrarCarrito',()=>oldMostrarCar.apply(this,a),rows);
+      if(typeof window.setSync==='function')window.setSync=(...a)=>{rows.push({nombre:'setSync: '+String(a[0]||'').slice(0,35),ms:0});return oldSetSync.apply(this,a)};
+
+      try{
+        const r=await medir('guardarProducto TOTAL interno',()=>originalGuardar.apply(this,arguments),rows);
+        rows.push({nombre:'TOTAL desde botón',ms:Math.round(performance.now()-totalIni)});
+        pintar('Resultado de guardar producto',rows,performance.now()-totalIni);
+        return r;
+      }finally{
+        if(oldAuditar)window.auditar=oldAuditar;
+        if(oldCargarTodo)window.cargarTodo=oldCargarTodo;
+        if(oldActualizar)window.actualizarPantalla=oldActualizar;
+        if(oldMostrarInv)window.mostrarInventario=oldMostrarInv;
+        if(oldMostrarCar)window.mostrarCarrito=oldMostrarCar;
+        if(oldSetSync)window.setSync=oldSetSync;
+        try{guardarProducto=window.guardarProducto}catch(e){}
+      }
+    };
+    try{guardarProducto=window.guardarProducto}catch(e){}
+  }
+
+  window.addEventListener('load',()=>setTimeout(ensureBox,800));
+})();
+</script>
+
+
+<!-- HC 14.29: consumo con fecha/hora y sin diagnóstico visual -->
+<script id="hc1429-consumo-fecha-hora-sin-diagnostico">
+(function(){
+  if(window.HC1429_CONSUMO_FECHA_HORA)return;
+  window.HC1429_CONSUMO_FECHA_HORA=true;
+
+  function el(id){return document.getElementById(id)}
+  function pad(n){return String(n).padStart(2,'0')}
+  function nowLocalValue(){
+    const d=new Date();
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  function localToISO(v){
+    if(!v)return new Date().toISOString();
+    const d=new Date(v);
+    if(isNaN(d))return new Date().toISOString();
+    return d.toISOString();
+  }
+  function fechaSolo(v){
+    try{return (v?new Date(v):new Date()).toISOString().slice(0,10)}catch(e){return (typeof hoyISO==='function'?hoyISO():new Date().toISOString().slice(0,10))}
+  }
+  function prepararFechaConsumo(forzar){
+    const f=el('fechaHoraConsumo');
+    if(f && (forzar || !f.value)) f.value=nowLocalValue();
+  }
+  window.hc1429PrepararFechaConsumo=prepararFechaConsumo;
+
+  // Quitar cualquier diagnóstico flotante de versiones de prueba.
+  function limpiarDiagnostico(){
+    ['hc1425DiagBox','hcDiagBox','hc1424DiagBox','hcDiagMini'].forEach(id=>{try{el(id)?.remove()}catch(e){}});
+    try{document.querySelectorAll('[id*="DiagBox"], .hcdiag-row').forEach(x=>x.remove())}catch(e){}
+  }
+  setInterval(limpiarDiagnostico,2500);
+  setTimeout(limpiarDiagnostico,300);
+
+  const abrirPanelAnterior=window.abrirPanel;
+  if(typeof abrirPanelAnterior==='function' && !abrirPanelAnterior.__hc1429){
+    window.abrirPanel=function(panel){
+      const r=abrirPanelAnterior.apply(this,arguments);
+      if(String(panel)==='consumo')setTimeout(()=>prepararFechaConsumo(true),80);
+      return r;
+    };
+    window.abrirPanel.__hc1429=true;
+    try{abrirPanel=window.abrirPanel}catch(e){}
+  }
+
+  document.addEventListener('DOMContentLoaded',()=>prepararFechaConsumo(false));
+  window.addEventListener('load',()=>setTimeout(()=>prepararFechaConsumo(false),500));
+  document.addEventListener('click',function(e){
+    const b=e.target.closest && e.target.closest('button');
+    if(!b)return;
+    const t=(b.textContent||'')+' '+(b.getAttribute('onclick')||'');
+    if(/consumo|descontar/i.test(t))prepararFechaConsumo(false);
+  },true);
+
+  // Registrar consumo optimizado: guarda fecha_consumo y libera sin diagnóstico.
+  window.registrarConsumo=async function(){
+    const prod=(window.productos||productos||[]).find(p=>String(p.id)===String(el('productoConsumo')?.value));
+    if(!prod)return alert('Selecciona producto');
+    const cantidad=Number(el('cantidadConsumo')?.value||0);
+    if(cantidad<=0)return alert('Cantidad inválida');
+    if(cantidad>Number(prod.cantidad||0))return alert('No hay suficiente inventario');
+    prepararFechaConsumo(false);
+    const fechaConsumo=localToISO(el('fechaHoraConsumo')?.value);
+    const consumo={
+      producto_id:prod.id,
+      producto:prod.nombre,
+      cantidad,
+      nota:(el('notaConsumo')?.value||'').trim(),
+      fecha:fechaSolo(fechaConsumo),
+      fecha_consumo:fechaConsumo,
+      usuario:(window.sesion&&sesion.usuario)||''
+    };
+    try{if(typeof setSync==='function')setSync('Guardando consumo...')}catch(e){}
+    const r1=await db.from('despensa_consumos').insert(consumo);
+    if(r1.error)return alert(r1.error.message);
+    const nuevaCantidad=Number(prod.cantidad||0)-cantidad;
+    const r2=await db.from('despensa_productos').update({cantidad:nuevaCantidad,actualizado:new Date().toISOString()}).eq('id',prod.id);
+    if(r2.error)return alert(r2.error.message);
+    // Actualización local inmediata sin recargar todo.
+    try{prod.cantidad=nuevaCantidad; prod.actualizado=new Date().toISOString()}catch(e){}
+    try{(window.consumos=Array.isArray(window.consumos)?window.consumos:consumos).unshift(Object.assign({id:'local_'+Date.now()},consumo))}catch(e){try{consumos.unshift(Object.assign({id:'local_'+Date.now()},consumo))}catch(x){}}
+    try{await auditar('registrar_consumo',prod.nombre,consumo)}catch(e){}
+    if(el('cantidadConsumo'))el('cantidadConsumo').value='';
+    if(el('notaConsumo'))el('notaConsumo').value='';
+    prepararFechaConsumo(true);
+    try{if(typeof mostrarInventario==='function')mostrarInventario()}catch(e){}
+    try{if(typeof cargarSelects==='function')cargarSelects()}catch(e){}
+    try{if(typeof mostrarConsumos==='function')mostrarConsumos()}catch(e){}
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla()}catch(e){}
+    try{if(typeof setSync==='function')setSync('✅ Consumo guardado')}catch(e){}
+    return true;
+  };
+  try{registrarConsumo=window.registrarConsumo}catch(e){}
+})();
+</script>
+
+
+
+<!-- HC 14.30: limpieza final de barra flotante de diagnóstico de pruebas -->
+<style id="hc1430-sin-barra-diagnostico-css">
+  #hcDiagMini,
+  #hcDiagBox,
+  #hc1425DiagBox,
+  #hc1424DiagBox{
+    display:none!important;
+    visibility:hidden!important;
+    pointer-events:none!important;
+  }
+</style>
+<script id="hc1430-sin-barra-diagnostico">
+(function(){
+  if(window.HC1430_SIN_BARRA_DIAGNOSTICO)return;
+  window.HC1430_SIN_BARRA_DIAGNOSTICO=true;
+  function limpiar(){
+    ['hcDiagMini','hcDiagBox','hc1425DiagBox','hc1424DiagBox'].forEach(function(id){
+      try{var x=document.getElementById(id); if(x)x.remove();}catch(e){}
+    });
+  }
+  limpiar();
+  document.addEventListener('DOMContentLoaded',limpiar);
+  window.addEventListener('load',function(){setTimeout(limpiar,100);setTimeout(limpiar,900);setTimeout(limpiar,2600);});
+  setInterval(limpiar,3000);
+})();
+</script>
+
 </body>
 
 
@@ -28082,5 +28547,642 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
   window.hc1418ActualizarTotalesCarrito=actualizarTotalesCarrito14;
   setTimeout(()=>{try{actualizarTotalesCarrito14(); if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}},800);
   setInterval(()=>{try{actualizarTotalesCarrito14()}catch(e){}},5000);
+})();
+</script>
+
+
+<!-- HC 14.21 PARTE 1: optimización de recargas pesadas -->
+<script id="hc1421-optimizacion-parte1">
+/*
+  Objetivo: no descargar toda la base de datos después de cada acción.
+  - La primera carga sigue siendo completa.
+  - Después de guardar/editar/comprar/eliminar se actualiza sólo lo necesario:
+    productos + carrito + contadores visibles.
+  - La recarga completa queda disponible como hc1421CargarTodoCompleto().
+*/
+(function(){
+  if(window.HC1421_OPTIMIZACION_PARTE1)return;
+  window.HC1421_OPTIMIZACION_PARTE1=true;
+
+  const cargarTodoOriginal = (typeof cargarTodo === 'function') ? cargarTodo : window.cargarTodo;
+  let cargaCompletaHecha = false;
+  let refrescoLigeroActivo = false;
+  let ultimaCargaLigera = 0;
+
+  function num(v){return Number(v||0)||0;}
+  function fmt(v){try{return (typeof money==='function')?money(v):Number(v||0).toFixed(2)}catch(e){return Number(v||0).toFixed(2)}}
+  function setEstado(txt){try{ if(typeof setSync==='function') setSync(txt); }catch(e){} }
+  function conTimeout(promise, ms, nombre){
+    let t;
+    const timeout=new Promise((_,rej)=>{t=setTimeout(()=>rej(new Error((nombre||'Operación')+' tardó demasiado. Pantalla liberada; sincroniza de nuevo si no ves el cambio.')),ms)});
+    return Promise.race([promise,timeout]).finally(()=>clearTimeout(t));
+  }
+  function arr(a){return Array.isArray(a)?a:[];}
+  function ponerCarrito(a){
+    a=arr(a);
+    try{window.carrito=a;}catch(e){}
+    try{carrito=a;}catch(e){}
+    try{carritoActual=a;}catch(e){}
+    try{itemsCarrito=a;}catch(e){}
+    try{localStorage.removeItem('despensaCarrito');}catch(e){}
+  }
+  function dedupeCarrito(lista){
+    const seen=new Set();
+    return arr(lista).filter(x=>{
+      const k=String(x.id||x.cloud_id||x.producto_id||x.nombre||'')+'|'+String(x.tienda||'Sin tienda')+'|'+String(x.estado||'pendiente');
+      if(seen.has(k))return false;
+      seen.add(k); return true;
+    });
+  }
+  async function leerCarritoRapido(){
+    if(typeof cargarCarritoSupabase==='function'){
+      const r=await cargarCarritoSupabase();
+      return dedupeCarrito(Array.isArray(r)?r:(window.carrito||[]));
+    }
+    if(typeof cargarCarritoOnline==='function'){
+      const r=await cargarCarritoOnline();
+      return dedupeCarrito(Array.isArray(r)?r:(window.carrito||[]));
+    }
+    if(typeof db==='undefined'||!db)return dedupeCarrito(window.carrito||[]);
+    const r=await db.from('home_carrito_compartido').select('*').eq('activo',true).eq('estado','pendiente').order('created_at',{ascending:false});
+    if(r.error)throw r.error;
+    return dedupeCarrito(r.data||[]);
+  }
+  async function refrescarProductosYCarrito(){
+    if(typeof db==='undefined'||!db){
+      try{ if(typeof actualizarPantalla==='function') actualizarPantalla(); }catch(e){}
+      return true;
+    }
+    const ahora=Date.now();
+    if(refrescoLigeroActivo)return true;
+    if(ahora-ultimaCargaLigera<650){
+      try{ if(typeof mostrarCarrito==='function') mostrarCarrito(); }catch(e){}
+      return true;
+    }
+    refrescoLigeroActivo=true;
+    setEstado('Actualizando cambios...');
+    try{
+      const prom=Promise.all([
+        db.from('despensa_productos').select('*').order('nombre'),
+        leerCarritoRapido()
+      ]);
+      const [p,car]=await conTimeout(prom,12000,'Sincronización ligera');
+      if(p && p.error)throw p.error;
+      if(p && Array.isArray(p.data)){
+        try{productos=p.data||[];}catch(e){}
+        try{window.productos=p.data||[];}catch(e){}
+      }
+      ponerCarrito(car||[]);
+      refrescarVisualLigero();
+      ultimaCargaLigera=Date.now();
+      setEstado('Estamos en línea 😊');
+      return true;
+    }catch(e){
+      console.warn('HC14.21 refresco ligero:',e);
+      setEstado('En línea; sincronización ligera pendiente');
+      refrescarVisualLigero();
+      return false;
+    }finally{
+      refrescoLigeroActivo=false;
+    }
+  }
+  function refrescarVisualLigero(){
+    // Evita reconstruir módulos pesados si sólo cambió carrito/inventario.
+    const panel=(typeof panelActual!=='undefined'?panelActual:(location.hash||'')).replace('#','');
+    try{ if(typeof cargarSelects==='function') cargarSelects(); }catch(e){}
+    try{ if(typeof mostrarInventario==='function' && (!panel || panel==='inventario' || panel==='carrito' || document.getElementById('listaInventario'))) mostrarInventario(); }catch(e){}
+    try{ if(typeof mostrarCarrito==='function') mostrarCarrito(); }catch(e){}
+    try{ if(typeof actualizarPanelCarritoRapido==='function') actualizarPanelCarritoRapido(); }catch(e){}
+    try{ if(typeof hc1418ActualizarTotalesCarrito==='function') hc1418ActualizarTotalesCarrito(); }catch(e){}
+    try{ if(typeof actualizarTotalesCarrito14==='function') actualizarTotalesCarrito14(); }catch(e){}
+    try{ if(typeof mostrarAsistente==='function' && (panel==='asistente'||panel==='inicio')) mostrarAsistente(); }catch(e){}
+  }
+
+  window.hc1421RefrescarLigero=refrescarProductosYCarrito;
+  window.hc1421RefrescarVisualLigero=refrescarVisualLigero;
+  window.hc1421CargarTodoCompleto=async function(){
+    if(typeof cargarTodoOriginal!=='function')return refrescarProductosYCarrito();
+    setEstado('Cargando datos completos...');
+    const r=await conTimeout(cargarTodoOriginal.apply(this,arguments),22000,'Carga completa');
+    cargaCompletaHecha=true;
+    setTimeout(refrescarVisualLigero,150);
+    return r;
+  };
+
+  const nuevoCargarTodo=async function(opciones){
+    const panel=(typeof panelActual!=='undefined'?panelActual:(location.hash||'')).replace('#','');
+    const forzarCompleto = opciones===true || (opciones&&opciones.full) || !cargaCompletaHecha || panel==='reportes' || panel==='gastos' || panel==='usuariosPanel' || panel==='categoriasPanel';
+    if(forzarCompleto){
+      try{return await window.hc1421CargarTodoCompleto.apply(this,arguments);}catch(e){
+        console.warn('HC14.21 carga completa falló, intento ligero:',e);
+        cargaCompletaHecha=true;
+        return await refrescarProductosYCarrito();
+      }}
+    return await refrescarProductosYCarrito();
+  };
+  nuevoCargarTodo.__hc1421=true;
+  try{window.cargarTodo=nuevoCargarTodo;}catch(e){}
+  try{cargarTodo=nuevoCargarTodo;}catch(e){}
+
+  // Cuando termine cualquier operación bloqueada, no fuerces toda la app: sólo sincroniza lo esencial.
+  const oldRunBtn=window.runBtn;
+  if(typeof oldRunBtn==='function' && !oldRunBtn.__hc1421){
+    window.runBtn=async function(btn,msg,fn){
+      const r=await oldRunBtn.apply(this,arguments);
+      setTimeout(()=>{try{refrescarProductosYCarrito();}catch(e){}},150);
+      return r;
+    };
+    window.runBtn.__hc1421=true;
+    try{runBtn=window.runBtn;}catch(e){}
+  }
+
+  // Botón/atajo opcional para sincronización completa manual desde consola o diagnóstico.
+  window.hcSincronizacionCompleta=window.hc1421CargarTodoCompleto;
+
+  window.addEventListener('load',()=>setTimeout(()=>{
+    try{refrescarVisualLigero();}catch(e){}
+  },1200));
+})();
+</script>
+
+<!-- HC 14.23: Guardar producto rápido sin recargar toda la app -->
+<script id="hc1423-guardar-producto-rapido">
+(function(){
+  if(window.HC1423_GUARDAR_PRODUCTO_RAPIDO)return;
+  window.HC1423_GUARDAR_PRODUCTO_RAPIDO=true;
+
+  let busy=false;
+  const TAB='despensa_productos';
+
+  function dbx(){try{if(typeof db!=='undefined'&&db)return db;}catch(e){} return window.db||null;}
+  function n(v){return Number(v||0)||0;}
+  function norm(s){
+    try{if(typeof normalizarProductoNombre==='function')return normalizarProductoNombre(s);}catch(e){}
+    return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();
+  }
+  function getProductos(){try{if(Array.isArray(window.productos))return window.productos;}catch(e){} try{if(Array.isArray(productos))return productos;}catch(e){} return [];}
+  function setProductos(a){try{window.productos=a;}catch(e){} try{productos=a;}catch(e){}}
+  function val(id){return document.getElementById(id)?.value ?? '';}
+  function el(id){return document.getElementById(id);}
+  function notasBase(){
+    try{return combinarNotasFarmacia(val('notasProducto').trim());}catch(e){return val('notasProducto').trim();}
+  }
+  function limpiar(){try{limpiarProductoForm();}catch(e){}
+    try{const b=el('btnProducto'); if(b){b.disabled=false; b.textContent='➕ Agregar producto';}}catch(e){}
+  }
+  function refrescoLigero(){
+    try{if(typeof actualizarSelects==='function')actualizarSelects();}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+    try{if(typeof mostrarInventario==='function')mostrarInventario();}catch(e){}
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+    try{if(typeof setSync==='function')setSync('✅ Producto guardado');}catch(e){}
+  }
+  function reemplazarLocal(row){
+    if(!row)return;
+    const arr=getProductos().slice();
+    const i=arr.findIndex(p=>String(p.id)===String(row.id));
+    if(i>=0)arr[i]=Object.assign({},arr[i],row);
+    else arr.unshift(row);
+    setProductos(arr);
+  }
+  function itemFormulario(){
+    const tipo=val('tipoControlProducto')||'mensual';
+    return {
+      nombre:val('nombreProducto').trim(),
+      categoria:val('categoriaProducto').trim(),
+      tipo_control:tipo,
+      perecedero:tipo==='semanal',
+      dias_cobertura:tipo==='semanal'?7:30,
+      cantidad:n(val('cantidadProducto')),
+      unidad:val('unidadProducto').trim()||'pza',
+      minimo:n(val('minimoProducto')),
+      precio:n(val('precioProducto')),
+      tienda_preferida:val('tiendaPreferida').trim(),
+      notas:notasBase(),
+      foto:window.fotoProductoBase64||'',
+      actualizado:new Date().toISOString()
+    };
+  }
+
+  window.guardarProducto=async function(){
+    if(busy){alert('Espere, todavía estoy subiendo a servidor.'); return false;}
+    const c=dbx();
+    if(!c){alert('No hay conexión con Supabase.'); return false;}
+    const item=itemFormulario();
+    if(!item.nombre){alert('Falta el nombre del producto'); return false;}
+
+    const editId=(typeof editandoId!=='undefined' && editandoId) ? editandoId : (window.editandoId||null);
+    const clave=norm(item.nombre);
+    const duplicado=getProductos().find(p=>norm(p.nombre)===clave && String(p.id)!==String(editId||''));
+    if(duplicado){
+      const msg=`Ya existe un producto llamado "${duplicado.nombre}".\n\n¿Quieres abrir el producto existente para editarlo?`;
+      if(confirm(msg)){try{editarProducto(duplicado.id);}catch(e){}}
+      return false;
+    }
+
+    busy=true;
+    try{
+      try{if(typeof setSync==='function')setSync('⏳ Guardando producto...');}catch(e){}
+      let r;
+      if(editId){
+        r=await c.from(TAB).update(item).eq('id',editId).select('*').maybeSingle();
+        if(r.error)throw r.error;
+        reemplazarLocal(r.data||Object.assign({id:editId},item));
+        try{auditar&&auditar('editar_producto',item.nombre,item);}catch(e){}
+      }else{
+        r=await c.from(TAB).insert(item).select('*').single();
+        if(r.error)throw r.error;
+        reemplazarLocal(r.data||item);
+        try{auditar&&auditar('crear_producto',item.nombre,item);}catch(e){}
+      }
+
+      limpiar();
+      refrescoLigero();
+      return true;
+    }catch(e){
+      const msg=String(e?.message||e||'');
+      if(msg.toLowerCase().includes('duplicate')||msg.toLowerCase().includes('unique'))alert('Ese producto ya existe en Supabase. Usa editar o cambia el nombre.');
+      else alert('Error guardando producto: '+msg);
+      try{if(typeof setSync==='function')setSync('⚠️ Error al guardar');}catch(x){}
+      return false;
+    }finally{
+      busy=false;
+      try{if(typeof hc1415End==='function')hc1415End();}catch(e){}
+    }
+  };
+  try{guardarProducto=window.guardarProducto;}catch(e){}
+})();
+</script>
+
+
+<!-- HC 14.26: Versión sana - guardar producto rápido sin bloqueo global ni diagnóstico -->
+<style id="hc1426-sano-css">
+  #hc1426Toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:999999;display:none;max-width:92vw;padding:12px 18px;border-radius:22px;background:linear-gradient(135deg,#0f766e,#0891b2);color:white;font-weight:900;box-shadow:0 14px 35px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.25)}
+  #hc1426Toast.on{display:block}
+</style>
+<script id="hc1426-version-sana-guardar-producto">
+(function(){
+  if(window.HC1426_VERSION_SANA)return;
+  window.HC1426_VERSION_SANA=true;
+
+  let guardando=false;
+  const TAB_PRODUCTOS='despensa_productos';
+
+  function cli(){try{if(typeof db!=='undefined'&&db)return db;}catch(e){} return window.db||null;}
+  function n(v){return Number(v||0)||0;}
+  function val(id){return document.getElementById(id)?.value ?? '';}
+  function btnProducto(){return document.getElementById('btnProducto');}
+  function norm(s){
+    try{if(typeof normalizarProductoNombre==='function')return normalizarProductoNombre(s);}catch(e){}
+    return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();
+  }
+  function productosArr(){try{if(Array.isArray(window.productos))return window.productos;}catch(e){} try{if(Array.isArray(productos))return productos;}catch(e){} return [];}
+  function setProductos(a){try{window.productos=a;}catch(e){} try{productos=a;}catch(e){}}
+  function setEstado(txt){try{if(typeof setSync==='function')setSync(txt);}catch(e){}}
+  function toast(txt,on=true){
+    let box=document.getElementById('hc1426Toast');
+    if(!box){box=document.createElement('div');box.id='hc1426Toast';document.body.appendChild(box);}
+    box.textContent=txt||'';
+    box.classList.toggle('on',!!on);
+  }
+  function limpiarBloqueosViejos(){
+    try{document.body.style.cursor='';}catch(e){}
+    try{document.querySelectorAll('.hc-form-bloqueado').forEach(x=>x.classList.remove('hc-form-bloqueado'));}catch(e){}
+    try{const w=document.getElementById('hcServidorWait'); if(w)w.classList.remove('on');}catch(e){}
+    try{document.querySelectorAll('button.hc-btn-procesando').forEach(b=>{b.classList.remove('hc-btn-procesando'); b.disabled=false; if(b.hasAttribute('data-hc-old-text')){b.innerHTML=b.getAttribute('data-hc-old-text'); b.removeAttribute('data-hc-old-text');}});}catch(e){}
+    try{window.HC1415_PROCESANDO=false;}catch(e){}
+  }
+  function bloquear(on,msg){
+    const b=btnProducto();
+    if(b){
+      if(on){
+        if(!b.dataset.hc1426Old)b.dataset.hc1426Old=b.innerHTML;
+        b.disabled=true; b.style.pointerEvents='none'; b.style.opacity='.72';
+        b.innerHTML='⏳ '+(msg||'Guardando...');
+      }else{
+        b.disabled=false; b.style.pointerEvents=''; b.style.opacity='';
+        if(b.dataset.hc1426Old){b.innerHTML=b.dataset.hc1426Old; delete b.dataset.hc1426Old;}
+      }
+    }
+    toast(on?(msg||'Guardando en servidor...'):'',on);
+  }
+  function notasProducto(){
+    const notas=String(val('notasProducto')||'').trim();
+    try{return combinarNotasFarmacia(notas);}catch(e){return notas;}
+  }
+  function leerFormulario(){
+    const tipo=val('tipoControlProducto')||'mensual';
+    return {
+      nombre:String(val('nombreProducto')||'').trim(),
+      categoria:String(val('categoriaProducto')||'').trim(),
+      tipo_control:tipo,
+      perecedero:tipo==='semanal',
+      dias_cobertura:tipo==='semanal'?7:30,
+      cantidad:n(val('cantidadProducto')),
+      unidad:String(val('unidadProducto')||'pza').trim()||'pza',
+      minimo:n(val('minimoProducto')),
+      precio:n(val('precioProducto')),
+      tienda_preferida:String(val('tiendaPreferida')||'').trim(),
+      notas:notasProducto(),
+      foto:window.fotoProductoBase64||'',
+      actualizado:new Date().toISOString()
+    };
+  }
+  function editIdActual(){
+    try{if(typeof editandoId!=='undefined'&&editandoId)return editandoId;}catch(e){}
+    return window.editandoId||null;
+  }
+  function reemplazarLocal(row){
+    if(!row)return;
+    const arr=productosArr().slice();
+    const i=arr.findIndex(p=>String(p.id)===String(row.id));
+    if(i>=0)arr[i]=Object.assign({},arr[i],row);
+    else arr.unshift(row);
+    setProductos(arr);
+  }
+  function refrescarLigero(){
+    try{if(typeof cargarSelects==='function')cargarSelects();}catch(e){}
+    try{if(typeof mostrarInventario==='function')mostrarInventario();}catch(e){}
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+    try{if(typeof hc1418ActualizarTotalesCarrito==='function')hc1418ActualizarTotalesCarrito();}catch(e){}
+    try{if(typeof actualizarTotalesCarrito14==='function')actualizarTotalesCarrito14();}catch(e){}
+  }
+  function limpiarFormularioSeguro(){
+    try{limpiarProductoForm();return;}catch(e){}
+    ['nombreProducto','cantidadProducto','minimoProducto','precioProducto','tiendaPreferida','notasProducto','fotoProducto'].forEach(id=>{const x=document.getElementById(id); if(x)x.value='';});
+    try{window.fotoProductoBase64=''; fotoProductoBase64='';}catch(e){}
+    try{const img=document.getElementById('previewProducto'); if(img){img.src='';img.classList.add('oculto');}}catch(e){}
+    try{window.editandoId=null; editandoId=null;}catch(e){}
+  }
+
+  async function guardarProductoSano(){
+    if(guardando)return false;
+    guardando=true;
+    const t0=(performance&&performance.now)?performance.now():Date.now();
+    try{
+      limpiarBloqueosViejos();
+      bloquear(true,'Guardando producto en Supabase...');
+      setEstado('⏳ Guardando producto...');
+      const c=cli(); if(!c)throw new Error('No hay conexión con Supabase.');
+      const item=leerFormulario();
+      if(!item.nombre)throw new Error('Pon el nombre del producto.');
+      const editId=editIdActual();
+      const clave=norm(item.nombre);
+      const duplicado=productosArr().find(p=>norm(p.nombre)===clave && String(p.id)!==String(editId||''));
+      if(duplicado)throw new Error('Ya existe: '+duplicado.nombre);
+
+      let res;
+      if(editId)res=await c.from(TAB_PRODUCTOS).update(item).eq('id',editId).select('*').maybeSingle();
+      else res=await c.from(TAB_PRODUCTOS).insert(item).select('*').single();
+      if(res.error)throw res.error;
+
+      const row=res.data || Object.assign({id:editId||Date.now()},item);
+      reemplazarLocal(row);
+      limpiarFormularioSeguro();
+      refrescarLigero();
+      const dt=(((performance&&performance.now)?performance.now():Date.now())-t0)/1000;
+      setEstado('✅ Producto guardado');
+      toast('✅ Producto guardado en '+dt.toFixed(2)+' s',true);
+      setTimeout(()=>toast('',false),1200);
+      try{auditar&&auditar(editId?'editar_producto':'crear_producto',item.nombre,item);}catch(e){}
+      return true;
+    }catch(e){
+      console.error('HC14.26 guardarProducto:',e);
+      setEstado('⚠️ Error al guardar');
+      toast('⚠️ '+(e?.message||e),true);
+      alert(e?.message||e);
+      return false;
+    }finally{
+      guardando=false;
+      bloquear(false);
+      limpiarBloqueosViejos();
+    }
+  }
+
+  guardarProductoSano.__hc1415=true; // evita que el parche viejo HC14.15 la vuelva a envolver.
+  guardarProductoSano.__hc1426=true;
+  window.guardarProducto=guardarProductoSano;
+  try{guardarProducto=guardarProductoSano;}catch(e){}
+
+  // Limpieza defensiva por si quedó una capa vieja visible después de alguna acción anterior.
+  setInterval(()=>{if(!guardando)limpiarBloqueosViejos();},2500);
+})();
+</script>
+
+<!-- HC 14.27: Actualización inmediata de lista disponible al agregar al carrito -->
+<style id="hc1427-hide-added-css">
+  .hc1427-ocultando{opacity:.35!important;transform:scale(.985)!important;transition:.18s ease!important;pointer-events:none!important;filter:grayscale(.25)!important;}
+</style>
+<script id="hc1427-carrito-oculta-disponibles">
+(function(){
+  if(window.HC1427_OCULTA_DISPONIBLES)return;
+  window.HC1427_OCULTA_DISPONIBLES=true;
+
+  function norm(s){
+    try{if(typeof normalizarProductoNombre==='function')return normalizarProductoNombre(s);}catch(e){}
+    return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();
+  }
+  function productosArr(){try{if(Array.isArray(window.productos))return window.productos;}catch(e){} try{if(Array.isArray(productos))return productos;}catch(e){} return [];}
+  function carritoArr(){try{if(Array.isArray(window.carrito))return window.carrito;}catch(e){} try{if(Array.isArray(carrito))return carrito;}catch(e){} return [];}
+  function setCarritoLocal(a){a=Array.isArray(a)?a:[];try{window.carrito=a;}catch(e){} try{carrito=a;}catch(e){} try{carritoActual=a;}catch(e){} try{itemsCarrito=a;}catch(e){} try{localStorage.removeItem('despensaCarrito');}catch(e){}}
+  function prodById(id){return productosArr().find(p=>String(p.id)===String(id))||null;}
+  function estaEnCarrito(id){
+    const p=prodById(id);
+    const clave=p?norm(p.nombre):'';
+    return carritoArr().some(x=>String(x.producto_id||x.productoId||'')===String(id) || (clave && norm(x.producto||x.nombre)===clave));
+  }
+  function agregarLocalSiHaceFalta(id){
+    if(estaEnCarrito(id))return;
+    const p=prodById(id); if(!p)return;
+    const cantidad=(typeof cantidadSugeridaProducto==='function')?cantidadSugeridaProducto(p):1;
+    const precio=Number(p.precio||0)||0;
+    const item={
+      tmp:'local_'+Date.now()+'_'+Math.random().toString(16).slice(2),
+      producto_id:p.id,
+      producto:p.nombre,
+      nombre:p.nombre,
+      categoria:p.categoria||'',
+      cantidad,
+      precio,
+      precio_estimado:precio,
+      total:cantidad*precio,
+      tienda:p.tienda_preferida||'Sin tienda',
+      unidad:p.unidad||'',
+      estado:'pendiente',
+      activo:true
+    };
+    setCarritoLocal(carritoArr().concat([item]));
+  }
+  function ocultarProductoDisponible(id){
+    const p=prodById(id);
+    const nombre=p?norm(p.nombre):'';
+    const zonas=['listaRapidaCarrito','listaBajosCarrito'];
+    zonas.forEach(zid=>{
+      const z=document.getElementById(zid); if(!z)return;
+      Array.from(z.querySelectorAll('.quick-item,.postponed,.item,.hc-low-row')).forEach(row=>{
+        const html=row.innerHTML||'';
+        const txt=norm(row.textContent||'');
+        if(html.includes(String(id)) || (nombre && txt.includes(nombre))){
+          row.classList.add('hc1427-ocultando');
+          setTimeout(()=>{try{row.remove();}catch(e){}},120);
+        }
+      });
+    });
+  }
+  function refrescarCarritoVisual(id){
+    if(id)agregarLocalSiHaceFalta(id);
+    if(id)ocultarProductoDisponible(id);
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+    try{if(typeof hc1418ActualizarTotalesCarrito==='function')hc1418ActualizarTotalesCarrito();}catch(e){}
+    try{if(typeof actualizarTotalesCarrito14==='function')actualizarTotalesCarrito14();}catch(e){}
+    setTimeout(()=>{
+      if(id)ocultarProductoDisponible(id);
+      try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    },160);
+  }
+  async function sincronizarCarritoLigero(id){
+    try{
+      if(typeof cargarCarritoLimpio==='function')await cargarCarritoLimpio();
+      else if(typeof cargarCarritoSupabase==='function')await cargarCarritoSupabase();
+      else if(typeof cargarCarritoOnline==='function')await cargarCarritoOnline();
+    }catch(e){console.warn('HC14.27 carrito ligero:',e)}
+    refrescarCarritoVisual(id);
+  }
+
+  const oldRapido=window.agregarRapidoCarrito;
+  if(typeof oldRapido==='function' && !oldRapido.__hc1427){
+    const nuevo=async function(id){
+      const r=await oldRapido.apply(this,arguments);
+      refrescarCarritoVisual(id);
+      setTimeout(()=>sincronizarCarritoLigero(id),80);
+      return r;
+    };
+    nuevo.__hc1427=true;
+    window.agregarRapidoCarrito=nuevo;
+    try{agregarRapidoCarrito=nuevo;}catch(e){}
+  }
+
+  const oldManual=window.agregarAlCarrito;
+  if(typeof oldManual==='function' && !oldManual.__hc1427){
+    const nuevo=async function(){
+      const id=document.getElementById('productoCarrito')?.value || window.productoCarrito?.value || '';
+      const r=await oldManual.apply(this,arguments);
+      refrescarCarritoVisual(id);
+      setTimeout(()=>sincronizarCarritoLigero(id),80);
+      return r;
+    };
+    nuevo.__hc1427=true;
+    window.agregarAlCarrito=nuevo;
+    try{agregarAlCarrito=nuevo;}catch(e){}
+  }
+})();
+</script>
+
+<!-- HC 14.28: Ocultar productos disponibles AL INSTANTE al agregarlos al carrito -->
+<style id="hc1428-oculta-inmediato-css">
+  .hc1428-oculto-inmediato{display:none!important;}
+  .hc1428-agregando{opacity:.42!important;transform:scale(.985)!important;pointer-events:none!important;filter:grayscale(.2)!important;transition:.12s ease!important;}
+</style>
+<script id="hc1428-carrito-oculta-al-instante">
+(function(){
+  if(window.HC1428_OCULTA_AL_INSTANTE)return;
+  window.HC1428_OCULTA_AL_INSTANTE=true;
+  window.HC1428_IDS_EN_CARRITO = window.HC1428_IDS_EN_CARRITO || new Set();
+
+  function norm(s){
+    try{if(typeof normalizarProductoNombre==='function')return normalizarProductoNombre(s);}catch(e){}
+    return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();
+  }
+  function arrProductos(){try{if(Array.isArray(window.productos))return window.productos;}catch(e){} try{if(Array.isArray(productos))return productos;}catch(e){} return []}
+  function arrCarrito(){try{if(Array.isArray(window.carrito))return window.carrito;}catch(e){} try{if(Array.isArray(carrito))return carrito;}catch(e){} return []}
+  function setCarrito(a){a=Array.isArray(a)?a:[];try{window.carrito=a}catch(e){} try{carrito=a}catch(e){} try{carritoActual=a}catch(e){} try{itemsCarrito=a}catch(e){}}
+  function prod(id){return arrProductos().find(p=>String(p.id)===String(id))||null}
+  function yaExiste(id){
+    const p=prod(id), n=p?norm(p.nombre):'';
+    return arrCarrito().some(x=>String(x.producto_id||x.productoId||'')===String(id) || (n && norm(x.producto||x.nombre)===n));
+  }
+  function cantidadSug(p){try{return Math.max(1,Number(cantidadSugeridaProducto(p)||1))}catch(e){return 1}}
+  function ponerPendienteLocal(id){
+    if(!id)return;
+    window.HC1428_IDS_EN_CARRITO.add(String(id));
+    if(yaExiste(id))return;
+    const p=prod(id); if(!p)return;
+    const precio=Number(p.precio||0)||0;
+    const cantidad=cantidadSug(p);
+    const item={
+      tmp:'hc1428_'+Date.now()+'_'+Math.random().toString(16).slice(2),
+      producto_id:p.id,producto:p.nombre,nombre:p.nombre,categoria:p.categoria||'',
+      cantidad,precio,precio_estimado:precio,total:cantidad*precio,
+      tienda:p.tienda_preferida||'Sin tienda',unidad:p.unidad||'',estado:'pendiente',activo:true,
+      _hc1428_pendiente:true
+    };
+    setCarrito(arrCarrito().concat([item]));
+  }
+  function ocultarRows(id){
+    const p=prod(id), nombre=p?norm(p.nombre):'';
+    const zonas=['hcCajaPVCarritoLista','listaRapidaCarrito','listaBajosCarrito','panelCarritoRapido','carrito'];
+    zonas.forEach(zid=>{
+      const z=document.getElementById(zid); if(!z)return;
+      Array.from(z.querySelectorAll('.hc-pv-row,.quick-item,.postponed,.hc-low-row')).forEach(row=>{
+        const html=row.innerHTML||'', txt=norm(row.textContent||'');
+        const esBotonAgregar=!!row.querySelector('button[onclick*="agregar"],button[onclick*="Carrito"],button.hc-pv-add');
+        if(esBotonAgregar && (html.includes(String(id)) || (nombre && txt.includes(nombre)))){
+          row.classList.add('hc1428-agregando');
+          setTimeout(()=>{try{row.classList.add('hc1428-oculto-inmediato'); row.remove();}catch(e){}},60);
+        }
+      });
+    });
+  }
+  function repintarLigero(id){
+    if(id)ponerPendienteLocal(id);
+    if(id)ocultarRows(id);
+    try{if(typeof window.hc13836RenderCajaCarrito==='function')window.hc13836RenderCajaCarrito();}catch(e){}
+    if(id)ocultarRows(id);
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+    try{if(typeof hc1418ActualizarTotalesCarrito==='function')hc1418ActualizarTotalesCarrito();}catch(e){}
+    try{if(typeof actualizarTotalesCarrito14==='function')actualizarTotalesCarrito14();}catch(e){}
+    setTimeout(()=>{try{if(typeof window.hc13836RenderCajaCarrito==='function')window.hc13836RenderCajaCarrito();}catch(e){} if(id)ocultarRows(id);},80);
+  }
+
+  // 1) En cuanto se presiona cualquier botón que agrega por ID, ocultar antes de esperar Supabase.
+  document.addEventListener('click',function(e){
+    const b=e.target.closest&&e.target.closest('button'); if(!b)return;
+    const oc=b.getAttribute('onclick')||'';
+    let m=oc.match(/agregarRapidoCarrito\(['"]([^'"]+)['"]\)/) || oc.match(/hc13836AgregarCaja\(['"]([^'"]+)['"]\)/);
+    if(m&&m[1]){
+      window.HC1428_ULTIMO_ID=m[1];
+      repintarLigero(m[1]);
+    }
+    if(b.id==='hcGuardarCantidadCarrito' && window.HC1428_ULTIMO_ID){
+      repintarLigero(window.HC1428_ULTIMO_ID);
+      setTimeout(()=>repintarLigero(window.HC1428_ULTIMO_ID),180);
+      setTimeout(()=>repintarLigero(window.HC1428_ULTIMO_ID),650);
+    }
+  },true);
+
+  // 2) Si se abre el modal de cantidad, recordar qué producto se está agregando.
+  const oldAbrir=window.abrirCantidadCarrito;
+  if(typeof oldAbrir==='function'&&!oldAbrir.__hc1428){
+    const nuevo=function(id){window.HC1428_ULTIMO_ID=id; return oldAbrir.apply(this,arguments);};
+    nuevo.__hc1428=true; window.abrirCantidadCarrito=nuevo; try{abrirCantidadCarrito=nuevo}catch(e){}
+  }
+
+  // 3) La función principal también actualiza antes de esperar la operación real.
+  const oldRapido=window.agregarRapidoCarrito;
+  if(typeof oldRapido==='function'&&!oldRapido.__hc1428){
+    const nuevo=async function(id){
+      window.HC1428_ULTIMO_ID=id;
+      repintarLigero(id);
+      const r=await oldRapido.apply(this,arguments);
+      repintarLigero(id);
+      setTimeout(()=>repintarLigero(id),220);
+      return r;
+    };
+    nuevo.__hc1428=true; window.agregarRapidoCarrito=nuevo; try{agregarRapidoCarrito=nuevo}catch(e){}
+  }
 })();
 </script>
