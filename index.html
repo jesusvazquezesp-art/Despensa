@@ -25077,3 +25077,195 @@ body.dark #comidaFueraPanel > h3{
 body.dark #hcDiagLog{display:none!important;}
 body.dark .card:has(#hcDiagLog){display:none!important;}
 </style>
+
+<!-- HC 14.1: Misión foto + totales + filtro de productos bajos -->
+<style id="hc141-mision-foto-bajos-css">
+  #inventario #btnProducto{
+    min-height:96px!important;
+    width:100%!important;
+    margin:14px 0 8px!important;
+    border-radius:26px!important;
+    font-size:24px!important;
+    font-weight:950!important;
+    letter-spacing:.01em!important;
+    box-shadow:0 16px 34px rgba(37,99,235,.22)!important;
+  }
+  #inventario #btnProducto:disabled{
+    opacity:.82!important;
+    filter:saturate(.9)!important;
+  }
+  #hcFotoEstado{
+    display:none;
+    margin:10px 0 12px;
+    padding:12px 14px;
+    border-radius:18px;
+    background:#eff6ff;
+    border:1px solid rgba(37,99,235,.22);
+    color:#1e3a8a;
+    font-weight:850;
+    text-align:center;
+  }
+  #hcFotoEstado.activo{display:block;}
+  body.dark #hcFotoEstado{background:#0f172a;color:#bfdbfe;border-color:rgba(147,197,253,.35);}
+  #hcFiltroBajosBox{
+    margin:12px 0 10px;
+    padding:12px;
+    border-radius:18px;
+    background:rgba(248,250,252,.95);
+    border:1px solid rgba(148,163,184,.35);
+  }
+  body.dark #hcFiltroBajosBox{background:rgba(15,23,42,.92);border-color:rgba(148,163,184,.25);}
+  #hcFiltroBajosBox .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  @media(max-width:720px){#hcFiltroBajosBox .grid{grid-template-columns:1fr;}#inventario #btnProducto{min-height:104px;font-size:23px;}}
+  #hcListaBajosResumen{margin-top:10px;display:none;}
+  #hcListaBajosResumen.activo{display:block;}
+  .hc-low-row{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px;border-radius:14px;margin:8px 0;background:#fff7ed;border:1px solid rgba(251,146,60,.25);}
+  body.dark .hc-low-row{background:rgba(124,45,18,.25);}
+  .hc-low-row b{color:#9a3412;} body.dark .hc-low-row b{color:#fed7aa;}
+</style>
+<script id="hc141-mision-foto-bajos-js">
+(function(){
+  if(window.HC141_MISION_FOTO_BAJOS)return;
+  window.HC141_MISION_FOTO_BAJOS=true;
+
+  var fotoProcesando=false, fotoTimer=null, fotoInicio=0;
+  function el(id){return document.getElementById(id)}
+  function n(v){return Number(v||0)||0}
+  function money2(v){try{return typeof money==='function'?money(v):n(v).toFixed(2)}catch(e){return n(v).toFixed(2)}}
+  function minProd(p){try{return typeof limiteMinimo==='function'?limiteMinimo(p):n(p.minimo_recomendado||p.minimo)}catch(e){return n(p.minimo_recomendado||p.minimo)}}
+  function norm(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()}
+  function unicos(){try{return typeof productosUnicos==='function'?productosUnicos(productos||[]):(productos||[])}catch(e){return productos||[]}}
+  function listaBajos(){return unicos().filter(function(p){return n(p.cantidad)<=minProd(p)})}
+
+  function asegurarUI(){
+    var inv=el('inventario'); if(!inv)return;
+    var resumen=inv.querySelector('.resumen');
+    if(resumen && !el('totalProductosInv')){
+      var box=document.createElement('div');
+      box.className='box';
+      box.innerHTML='Total productos<strong><span id="totalProductosInv">0</span></strong>';
+      var bajos=el('totalBajosInv')?.closest('.box');
+      resumen.insertBefore(box,bajos||null);
+    }
+    var foto=el('fotoProducto');
+    if(foto && !el('hcFotoEstado')){
+      var st=document.createElement('div');
+      st.id='hcFotoEstado';
+      st.textContent='📷 Procesando foto...';
+      foto.insertAdjacentElement('afterend',st);
+    }
+    var buscar=el('buscarInventario');
+    if(buscar && !el('hcFiltroBajosBox')){
+      var box=document.createElement('div');
+      box.id='hcFiltroBajosBox';
+      box.innerHTML='<b>🔎 Filtro de inventario</b><div class="grid"><select id="hcFiltroInventarioStock"><option value="todos">Mostrar todo el inventario</option><option value="bajos">Mostrar solo productos bajos</option></select><input id="hcBuscarBajos" placeholder="Buscar dentro de productos bajos..."></div><div id="hcListaBajosResumen"></div>';
+      buscar.insertAdjacentElement('afterend',box);
+      el('hcFiltroInventarioStock').addEventListener('change',function(){try{actualizarPantalla()}catch(e){}});
+      el('hcBuscarBajos').addEventListener('input',function(){pintarListaBajos();try{actualizarPantalla()}catch(e){}});
+    }
+  }
+
+  function actualizarTotalesExtra(){
+    var tp=el('totalProductosInv'); if(tp)tp.textContent=unicos().length;
+    pintarListaBajos();
+  }
+
+  function pintarListaBajos(){
+    var host=el('hcListaBajosResumen'); if(!host)return;
+    var modo=el('hcFiltroInventarioStock')?.value||'todos';
+    var q=norm(el('hcBuscarBajos')?.value||'');
+    var arr=listaBajos().filter(function(p){return !q || norm([p.nombre,p.categoria,p.tienda_preferida,p.notas].join(' ')).includes(q)});
+    host.classList.toggle('activo', modo==='bajos' || q.length>0);
+    host.innerHTML=arr.length ? arr.map(function(p){
+      return '<div class="hc-low-row"><div><b>'+String(p.nombre||'Producto')+'</b><br><span class="muted">Queda '+money2(p.cantidad)+' '+(p.unidad||'')+' · mínimo '+money2(minProd(p))+' '+(p.unidad||'')+'</span></div><button type="button" onclick="agregarRapidoCarrito(\''+String(p.id).replace(/'/g,"\\'")+'\')">🛒</button></div>';
+    }).join('') : '<p class="muted">No encontré productos bajos con ese filtro.</p>';
+  }
+
+  function setFotoProcesando(on, textoFinal){
+    fotoProcesando=!!on;
+    var btn=el('btnProducto'), st=el('hcFotoEstado');
+    if(fotoTimer){clearInterval(fotoTimer);fotoTimer=null;}
+    if(on){
+      fotoInicio=Date.now();
+      if(btn){btn.disabled=true;btn.dataset.hcFotoDisabled='1';btn.innerHTML='⏳ Preparando foto...';}
+      if(st){st.classList.add('activo');st.textContent='📷 Procesando foto... 0 s';}
+      fotoTimer=setInterval(function(){var s=Math.max(0,Math.round((Date.now()-fotoInicio)/1000)); if(st)st.textContent='📷 Procesando foto... '+s+' s';},1000);
+    }else{
+      var seg=fotoInicio?Math.max(0,((Date.now()-fotoInicio)/1000).toFixed(1)):0;
+      if(btn && btn.dataset.hcFotoDisabled==='1'){btn.disabled=false;delete btn.dataset.hcFotoDisabled;btn.innerHTML=(typeof editandoId!=='undefined'&&editandoId)?'💾 Guardar cambios':'➕ Agregar producto';}
+      if(st){st.classList.add('activo');st.textContent=textoFinal || ('✅ Foto lista en '+seg+' s. Ya puedes guardar.');setTimeout(function(){st.classList.remove('activo')},4500);}
+    }
+  }
+
+  var oldCargarFoto=window.cargarFotoProducto;
+  window.cargarFotoProducto=function(ev){
+    var file=ev&&ev.target&&ev.target.files&&ev.target.files[0];
+    if(!file)return oldCargarFoto&&oldCargarFoto.apply(this,arguments);
+    asegurarUI();
+    setFotoProcesando(true);
+    var reader=new FileReader();
+    reader.onload=function(e){
+      var img=new Image();
+      img.onload=function(){
+        try{
+          var max=900,w=img.width,h=img.height;
+          if(w>h&&w>max){h=Math.round(h*max/w);w=max}else if(h>=w&&h>max){w=Math.round(w*max/h);h=max}
+          var canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+          var ctx=canvas.getContext('2d');ctx.drawImage(img,0,0,w,h);
+          fotoProductoBase64=canvas.toDataURL('image/jpeg',0.78);
+          var prev=el('previewProducto'); if(prev){prev.src=fotoProductoBase64;prev.classList.remove('oculto');}
+          setFotoProcesando(false);
+        }catch(err){console.error(err);setFotoProcesando(false,'⚠️ No pude procesar la foto. Intenta otra vez.');}
+      };
+      img.onerror=function(){setFotoProcesando(false,'⚠️ La foto no se pudo leer. Intenta otra.');};
+      img.src=e.target.result;
+    };
+    reader.onerror=function(){setFotoProcesando(false,'⚠️ Error leyendo la foto. Intenta otra.');};
+    reader.readAsDataURL(file);
+  };
+
+  var oldGuardar=window.guardarProducto;
+  if(typeof oldGuardar==='function'){
+    window.guardarProducto=async function(){
+      if(fotoProcesando){alert('La foto todavía se está preparando. Espera a que el contador diga que ya puedes guardar.');return;}
+      return await oldGuardar.apply(this,arguments);
+    };
+  }
+
+  var oldMostrar=window.mostrarInventario;
+  if(typeof oldMostrar==='function'){
+    window.mostrarInventario=function(){
+      asegurarUI();
+      var modo=el('hcFiltroInventarioStock')?.value||'todos';
+      if(modo!=='bajos'){
+        var r=oldMostrar.apply(this,arguments);
+        actualizarTotalesExtra();
+        return r;
+      }
+      var original=productos;
+      try{
+        productos=listaBajos();
+        var r2=oldMostrar.apply(this,arguments);
+        actualizarTotalesExtra();
+        return r2;
+      }finally{
+        productos=original;
+      }
+    };
+  }
+
+  var oldActualizar=window.actualizarPantalla;
+  if(typeof oldActualizar==='function'){
+    window.actualizarPantalla=function(){
+      asegurarUI();
+      var r=oldActualizar.apply(this,arguments);
+      actualizarTotalesExtra();
+      return r;
+    };
+  }
+
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(function(){asegurarUI();actualizarTotalesExtra();},300);});
+  else setTimeout(function(){asegurarUI();actualizarTotalesExtra();},300);
+  window.addEventListener('load',function(){setTimeout(function(){asegurarUI();actualizarTotalesExtra();},900);});
+})();
+</script>
