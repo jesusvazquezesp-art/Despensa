@@ -22926,6 +22926,371 @@ body.dark #comidaFueraPanel #cfConsejo{
 }
 </style>
 
+
+
+<script>
+/* HomeControl 14.5 - FIX carrito compartido usando SOLO columnas reales
+   Columnas reales confirmadas: id, producto_id, nombre, cantidad, unidad, tienda,
+   precio_estimado, motivo, agregado_por, estado, activo, created_at,
+   precio_normal, precio_oferta, precio_aplicado, categoria.
+   No se envían columnas inexistentes como producto, precio o total_estimado.
+*/
+(function(){
+  if(window.HC145_FIX_CARRITO_COLUMNAS_REALES)return;
+  window.HC145_FIX_CARRITO_COLUMNAS_REALES=true;
+
+  const TABLA_CARRITO="home_carrito_compartido";
+
+  function dbok(){
+    try{ if(typeof db!=="undefined" && db)return db; }catch(e){}
+    return window.db||null;
+  }
+  function n(v){ return Number(v||0)||0; }
+  function txt(s){ return String(s||"").trim().replace(/\s+/g," "); }
+  function usuario(){
+    try{return window.sesion?.usuario || window.sesion?.nombre || localStorage.getItem("home_usuario_nombre") || "Jesus Vazquez";}catch(e){}
+    return "Jesus Vazquez";
+  }
+
+  window.insertarCarritoNuevo = async function(prod, datos){
+    const c=dbok();
+    if(!c)throw new Error("No hay conexión a Supabase.");
+
+    const nombre=txt(datos?.nombre || datos?.producto || prod?.nombre || "Producto");
+    const cantidad=n(datos?.cantidad) || 1;
+    const precio=n(datos?.precio ?? datos?.precio_estimado ?? prod?.precio ?? prod?.precio_estimado ?? 0);
+    const tienda=txt(datos?.tienda || prod?.tienda_preferida || prod?.tienda || "Sin tienda");
+    const unidad=txt(datos?.unidad || prod?.unidad || "pz");
+    const categoria=txt(datos?.categoria_texto || datos?.categoria || prod?.categoria || prod?.categoria_texto || "");
+
+    const payload={
+      producto_id: prod?.id || null,
+      nombre: nombre,
+      cantidad: cantidad,
+      unidad: unidad,
+      tienda: tienda,
+      precio_estimado: precio,
+      precio_normal: precio,
+      precio_oferta: 0,
+      precio_aplicado: precio,
+      motivo: "Producto nuevo / modo aprendizaje",
+      agregado_por: usuario(),
+      estado: "pendiente",
+      activo: true,
+      categoria: categoria || null
+    };
+
+    const r=await c.from(TABLA_CARRITO).insert(payload);
+    if(r.error)throw r.error;
+    return true;
+  };
+
+  window.agregarProductoNuevoAlCarrito = async function(){
+    try{
+      const nombre=txt(document.getElementById("hcNuevoNombre")?.value);
+      const cantidad=n(document.getElementById("hcNuevoCantidad")?.value);
+      const unidad=document.getElementById("hcNuevoUnidad")?.value || "pz";
+      const precio=n(document.getElementById("hcNuevoPrecio")?.value);
+      const tienda=txt(document.getElementById("hcNuevoTienda")?.value) || "Sin tienda";
+      const catSel=document.getElementById("hcNuevoCategoria");
+      const categoria_id=catSel?.value || "eventual";
+      const categoria_texto=catSel?.selectedOptions?.[0]?.textContent || "Compra única / eventual";
+      const guardar=document.getElementById("hcNuevoGuardarInventario")?.checked !== false;
+
+      if(!nombre)return alert("Escribe el nombre del producto.");
+      if(cantidad<=0)return alert("Escribe la cantidad.");
+      if(precio<0)return alert("Escribe el precio.");
+
+      let prod={id:null,nombre,unidad,precio,precio_estimado:precio,tienda_preferida:tienda,categoria:categoria_texto};
+      if(guardar && typeof window.crearProductoNuevo==="function"){
+        prod=await window.crearProductoNuevo({nombre,categoria_id,categoria_texto,cantidad,unidad,precio,tienda});
+      }
+
+      await window.insertarCarritoNuevo(prod,{nombre,cantidad,unidad,precio,tienda,categoria_texto});
+
+      try{ if(typeof cargarProductos==="function")await cargarProductos(); }catch(e){}
+      try{ if(typeof cargarCarritoSupabase==="function")await cargarCarritoSupabase(); }catch(e){}
+      try{ if(typeof mostrarCarrito==="function")mostrarCarrito(); }catch(e){}
+      try{ if(typeof actualizarPanelCarritoRapido==="function")actualizarPanelCarritoRapido(); }catch(e){}
+      try{ if(typeof actualizarPantalla==="function")actualizarPantalla(); }catch(e){}
+
+      ["hcNuevoNombre","hcNuevoCantidad","hcNuevoPrecio","hcNuevoTienda"].forEach(id=>{
+        const el=document.getElementById(id);
+        if(el)el.value = id==="hcNuevoCantidad" ? "1" : "";
+      });
+
+      alert("Producto nuevo agregado al carrito.");
+    }catch(e){
+      alert("No se pudo agregar producto nuevo: "+(e.message||e));
+    }
+  };
+})();
+</script>
+
+
+
+<script id="hc1414-crear-carrito-inventario-cero">
+/* HC 14.14 - Crear producto nuevo desde carrito sin sumar inventario
+   Corrige el detalle visual/lógico: al presionar "Crear y agregar al carrito",
+   la cantidad capturada es SOLO para el carrito. El inventario queda en 0
+   hasta que se confirme la compra con el botón verde del carrito.
+*/
+(function(){
+  if(window.HC1414_CREAR_CARRITO_INVENTARIO_CERO)return;
+  window.HC1414_CREAR_CARRITO_INVENTARIO_CERO=true;
+
+  const TAB_PRODUCTOS='despensa_productos';
+  const TAB_CARRITO='home_carrito_compartido';
+  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+  let creando=false;
+
+  function cli(){try{if(typeof db!=='undefined'&&db)return db;}catch(e){} return window.db||null;}
+  function isUuid(v){return UUID.test(String(v||''));}
+  function num(v){return Number(String(v??0).replace(',','.'))||0;}
+  function txt(v,def=''){v=String(v??'').trim(); return v||def;}
+  function normal(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();}
+  function usuario(){return window.sesion?.usuario||window.sesion?.nombre||'Jesus Vazquez';}
+  function getProductos(){try{if(Array.isArray(window.productos))return window.productos;}catch(e){} try{if(Array.isArray(productos))return productos;}catch(e){} return [];}
+  function setProductos(a){try{window.productos=a;}catch(e){} try{productos=a;}catch(e){}}
+  function setCarrito(a){try{window.carrito=a;}catch(e){} try{carrito=a;}catch(e){} try{carritoActual=a;}catch(e){} try{itemsCarrito=a;}catch(e){}}
+  async function refrescar(){
+    try{if(typeof cargarTodo==='function')await cargarTodo();}catch(e){}
+    try{if(typeof cargarCarritoOnline==='function')await cargarCarritoOnline();}catch(e){}
+    try{if(typeof cargarCarritoSupabase==='function')await cargarCarritoSupabase();}catch(e){}
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+  }
+  async function buscarProductoExacto(nombre){
+    const objetivo=normal(nombre);
+    const local=getProductos().find(p=>normal(p.nombre)===objetivo);
+    if(local)return local;
+    const c=cli(); if(!c)return null;
+    try{
+      const r=await c.from(TAB_PRODUCTOS).select('*').ilike('nombre',nombre).limit(20);
+      if(!r.error && r.data?.length){
+        return r.data.find(p=>normal(p.nombre)===objetivo)||r.data[0]||null;
+      }
+    }catch(e){}
+    return null;
+  }
+  async function crearProductoInventarioCero(datos){
+    const c=cli(); if(!c)throw new Error('No hay conexión con Supabase.');
+    const existente=await buscarProductoExacto(datos.nombre);
+    if(existente)return {producto:existente,nuevo:false};
+
+    const payload={
+      nombre:datos.nombre,
+      categoria:datos.categoria_texto||datos.categoria||'Sin categoría',
+      cantidad:0,
+      unidad:datos.unidad||'pz',
+      minimo:0,
+      precio:num(datos.precio),
+      tienda_preferida:datos.tienda||'Sin tienda',
+      notas:'Creado desde carrito. Inventario pendiente hasta confirmar compra.',
+      actualizado:new Date().toISOString()
+    };
+    if(isUuid(datos.categoria_id))payload.categoria_id=datos.categoria_id;
+
+    let r=await c.from(TAB_PRODUCTOS).insert(payload).select('*').single();
+    if(r.error){
+      const simple={nombre:payload.nombre,categoria:payload.categoria,cantidad:0,unidad:payload.unidad,minimo:0,precio:payload.precio,tienda_preferida:payload.tienda_preferida,notas:payload.notas,actualizado:payload.actualizado};
+      r=await c.from(TAB_PRODUCTOS).insert(simple).select('*').single();
+    }
+    if(r.error)throw r.error;
+
+    // Seguro extra: aunque otra rutina intente usar la cantidad del carrito, este producto recién creado queda en 0.
+    try{await c.from(TAB_PRODUCTOS).update({cantidad:0,minimo:0,actualizado:new Date().toISOString()}).eq('id',r.data.id);}catch(e){}
+    r.data.cantidad=0; r.data.minimo=0;
+    const arr=getProductos(); arr.push(r.data); setProductos(arr);
+    return {producto:r.data,nuevo:true};
+  }
+  async function carritoPendiente(){
+    const c=cli(); if(!c)return [];
+    const r=await c.from(TAB_CARRITO).select('*').eq('activo',true).eq('estado','pendiente').limit(1000);
+    if(r.error)return [];
+    return r.data||[];
+  }
+  async function yaEstaEnCarrito(producto,nombre,tienda){
+    const rows=await carritoPendiente();
+    const pid=isUuid(producto?.id)?String(producto.id):'';
+    const nn=normal(nombre), tt=normal(tienda);
+    return rows.find(r=>{
+      if(pid && String(r.producto_id||'')===pid)return true;
+      return normal(r.nombre)===nn && normal(r.tienda||'')===tt;
+    })||null;
+  }
+  async function insertarCarritoUnaVez(producto,datos){
+    const c=cli(); if(!c)throw new Error('No hay conexión con Supabase.');
+    const existe=await yaEstaEnCarrito(producto,datos.nombre,datos.tienda);
+    if(existe)return {fila:existe,duplicado:true};
+    const precio=num(datos.precio);
+    const payload={
+      producto_id:isUuid(producto?.id)?producto.id:null,
+      nombre:datos.nombre,
+      cantidad:num(datos.cantidad)||1,
+      unidad:datos.unidad||producto?.unidad||'pz',
+      tienda:datos.tienda||producto?.tienda_preferida||'Sin tienda',
+      precio_estimado:precio,
+      precio_normal:precio,
+      precio_oferta:0,
+      precio_aplicado:precio,
+      motivo:'Pendiente de compra',
+      agregado_por:usuario(),
+      estado:'pendiente',
+      activo:true,
+      categoria:datos.categoria_texto||producto?.categoria||null
+    };
+    const r=await c.from(TAB_CARRITO).insert(payload).select('*').single();
+    if(r.error)throw r.error;
+    return {fila:r.data,duplicado:false};
+  }
+
+  window.agregarProductoNuevoAlCarrito=async function(){
+    if(creando)return alert('Estoy agregando el producto, espera un momento.');
+    creando=true;
+    try{
+      const nombre=txt(document.getElementById('hcNuevoNombre')?.value);
+      const cantidad=num(document.getElementById('hcNuevoCantidad')?.value);
+      const unidad=txt(document.getElementById('hcNuevoUnidad')?.value,'pz');
+      const precio=num(document.getElementById('hcNuevoPrecio')?.value);
+      const tienda=txt(document.getElementById('hcNuevoTienda')?.value,'Sin tienda');
+      const catSel=document.getElementById('hcNuevoCategoria');
+      const categoria_id=catSel?.value||'';
+      const categoria_texto=catSel?.selectedOptions?.[0]?.textContent||'Sin categoría';
+      const guardar=document.getElementById('hcNuevoGuardarInventario')?.checked!==false;
+
+      if(!nombre)return alert('Escribe el nombre del producto.');
+      if(cantidad<=0)return alert('Escribe la cantidad.');
+      if(precio<0)return alert('Escribe el precio.');
+
+      let producto={id:null,nombre,cantidad:0,minimo:0,unidad,precio,tienda_preferida:tienda,categoria:categoria_texto};
+      let nuevo=false;
+      if(guardar){
+        const res=await crearProductoInventarioCero({nombre,categoria_id,categoria_texto,unidad,precio,tienda});
+        producto=res.producto;
+        nuevo=res.nuevo;
+      }
+
+      const res=await insertarCarritoUnaVez(producto,{nombre,cantidad,unidad,precio,tienda,categoria_texto});
+
+      // Mantener inventario visual en 0 solo para el producto NUEVO creado desde este flujo.
+      if(nuevo && producto?.id){
+        const arr=getProductos().map(p=>String(p.id)===String(producto.id)?Object.assign({},p,{cantidad:0,minimo:0}):p);
+        setProductos(arr);
+      }
+
+      try{if(typeof cargarCarritoOnline==='function')await cargarCarritoOnline();}catch(e){}
+      try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+      try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+      try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+
+      ['hcNuevoNombre','hcNuevoPrecio','hcNuevoTienda'].forEach(id=>{const el=document.getElementById(id); if(el)el.value='';});
+      const canti=document.getElementById('hcNuevoCantidad'); if(canti)canti.value='1';
+
+      if(res.duplicado) alert('Ese producto ya estaba en el carrito. No lo dupliqué.');
+      else alert('Producto agregado al carrito. El inventario NO aumenta hasta confirmar la compra.');
+
+      // Refresco corto después del aviso para que desaparezca cualquier dato viejo de pantalla.
+      setTimeout(refrescar,350);
+    }catch(e){
+      alert('No se pudo agregar producto nuevo: '+(e.message||e));
+    }finally{
+      creando=false;
+    }
+  };
+})();
+</script>
+
+
+
+<!-- HC 14.19: Agrega contador de total de productos al resumen del carrito -->
+<style id="hc1419-contador-productos-carrito-css">
+  #carrito .resumen.hc1419-carrito-resumen{
+    display:grid!important;
+    grid-template-columns:repeat(4,minmax(0,1fr))!important;
+    gap:12px!important;
+  }
+  #carrito .resumen .hc1419-box-productos{
+    background:linear-gradient(135deg,rgba(250,204,21,.95),rgba(251,146,60,.75))!important;
+    color:#081225!important;
+  }
+  #carrito .resumen .hc1419-box-productos strong,
+  #carrito .resumen .hc1419-box-productos span{color:#081225!important;}
+  @media(max-width:720px){
+    #carrito .resumen.hc1419-carrito-resumen{
+      grid-template-columns:repeat(2,minmax(0,1fr))!important;
+    }
+    #carrito .resumen.hc1419-carrito-resumen .box{
+      min-height:84px!important;
+    }
+  }
+</style>
+<script id="hc1419-contador-productos-carrito">
+(function(){
+  if(window.HC1419_CONTADOR_PRODUCTOS_CARRITO)return;
+  window.HC1419_CONTADOR_PRODUCTOS_CARRITO=true;
+  function n(v){return Number(v||0)||0;}
+  function productosArr(){try{if(Array.isArray(window.productos))return window.productos}catch(e){} try{if(Array.isArray(productos))return productos}catch(e){} return []}
+  function productosUnicosLocal(){
+    var arr=productosArr();
+    try{if(typeof productosUnicos==='function')return productosUnicos(arr)}catch(e){}
+    var map=new Map();
+    arr.forEach(function(p){
+      var k=String(p&&p.id||p&&p.nombre||Math.random());
+      if(!map.has(k))map.set(k,p);
+    });
+    return Array.from(map.values());
+  }
+  function limite(p){try{return typeof limiteMinimo==='function'?Number(limiteMinimo(p)):n(p.minimo||p.minimo_recomendado)}catch(e){return n(p.minimo||p.minimo_recomendado)}}
+  function fmt(v){try{return typeof money==='function'?money(v):n(v).toFixed(2)}catch(e){return n(v).toFixed(2)}}
+  function asegurar(){
+    var sec=document.getElementById('carrito'); if(!sec)return;
+    var resumen=sec.querySelector(':scope > .resumen'); if(!resumen)return;
+    resumen.classList.add('hc1419-carrito-resumen');
+    if(!document.getElementById('totalProductosCarrito')){
+      var box=document.createElement('div');
+      box.className='box hc1419-box-productos';
+      box.innerHTML='Total productos<strong><span id="totalProductosCarrito">0</span></strong>';
+      var bajos=document.getElementById('totalBajosCarrito')?.closest('.box');
+      resumen.insertBefore(box,bajos||null);
+    }
+  }
+  function actualizar(){
+    asegurar();
+    var arr=productosUnicosLocal();
+    var tp=document.getElementById('totalProductosCarrito'); if(tp)tp.textContent=String(arr.length);
+    var td=document.getElementById('totalInventarioCarrito'); if(td)td.textContent=fmt(arr.reduce(function(s,p){return s+n(p.cantidad)*n(p.precio)},0));
+    var tb=document.getElementById('totalBajosCarrito'); if(tb)tb.textContent=String(arr.filter(function(p){return n(p.cantidad)<=limite(p)}).length);
+  }
+  window.hc1419ActualizarContadorProductosCarrito=actualizar;
+  var oldMostrar=window.mostrarCarrito;
+  if(typeof oldMostrar==='function'){
+    window.mostrarCarrito=function(){var r=oldMostrar.apply(this,arguments); try{actualizar()}catch(e){} return r;};
+    try{mostrarCarrito=window.mostrarCarrito}catch(e){}
+  }
+  var oldAct=window.actualizarPantalla;
+  if(typeof oldAct==='function'){
+    window.actualizarPantalla=function(){var r=oldAct.apply(this,arguments); try{actualizar()}catch(e){} return r;};
+  }
+  document.addEventListener('DOMContentLoaded',function(){setTimeout(actualizar,500);setTimeout(actualizar,1800);});
+  setTimeout(actualizar,700); setTimeout(actualizar,2200);
+})();
+</script>
+
+
+
+<!-- HC 14.20: solo ajustar letras de Total productos a blanco -->
+<style id="hc1420-total-productos-blanco">
+  #carrito .resumen .hc1419-box-productos,
+  #carrito .resumen .hc1419-box-productos *,
+  #carrito .resumen .hc1419-box-productos strong,
+  #carrito .resumen .hc1419-box-productos span{
+    color:#ffffff!important;
+    text-shadow:0 1px 2px rgba(0,0,0,.45)!important;
+  }
+</style>
+
 </body>
 
 
@@ -23080,6 +23445,157 @@ body.dark #comidaFueraPanel #cfConsejo{
 })();
 </script>
 
+
+
+<style id="hc1415-bloqueo-servidor-css">
+.hc-servidor-wait{
+  position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:999999;
+  display:none;align-items:center;gap:12px;max-width:92vw;padding:14px 18px;border-radius:22px;
+  background:linear-gradient(135deg,#0f766e,#0891b2);color:white;font-weight:900;
+  box-shadow:0 18px 45px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.25);
+}
+.hc-servidor-wait.on{display:flex}
+.hc-servidor-spin{width:24px;height:24px;border-radius:50%;border:4px solid rgba(255,255,255,.35);border-top-color:white;animation:hcSpin1415 .8s linear infinite;flex:0 0 auto}
+.hc-servidor-wait small{display:block;font-weight:700;opacity:.9;margin-top:2px}
+@keyframes hcSpin1415{to{transform:rotate(360deg)}}
+button.hc-btn-procesando{opacity:.72!important;filter:grayscale(.15)!important;pointer-events:none!important;cursor:wait!important;transform:none!important}
+.hc-form-bloqueado{position:relative;}
+.hc-form-bloqueado:after{content:'⏳ Espere, subiendo a servidor...';position:absolute;left:10px;right:10px;bottom:10px;padding:12px;border-radius:18px;background:rgba(15,23,42,.82);color:white;text-align:center;font-weight:900;backdrop-filter:blur(8px);}
+</style>
+<script id="hc1415-bloqueo-subiendo-servidor">
+/* HC 14.15 - Bloqueo contra doble clic y leyenda de espera
+   Deshabilita botones mientras Supabase responde para evitar duplicados.
+*/
+(function(){
+  if(window.HC1415_BLOQUEO_SERVIDOR)return;
+  window.HC1415_BLOQUEO_SERVIDOR=true;
+
+  let busy=false;
+  let lastBtn=null;
+  const originales={};
+
+  function ensureBox(){
+    let box=document.getElementById('hcServidorWait');
+    if(!box){
+      box=document.createElement('div');
+      box.id='hcServidorWait';
+      box.className='hc-servidor-wait';
+      box.innerHTML='<span class="hc-servidor-spin"></span><div><b id="hcServidorWaitTxt">Espere, subiendo a servidor...</b><small>No presiones otra vez ni cierres HomeControl.</small></div>';
+      document.body.appendChild(box);
+    }
+    return box;
+  }
+  function textoBtn(btn){return btn?btn.getAttribute('data-hc-old-text')||btn.innerHTML:'';}
+  function setWait(on,msg,btn){
+    const box=ensureBox();
+    const t=document.getElementById('hcServidorWaitTxt');
+    if(t)t.textContent=msg||'Espere, subiendo a servidor...';
+    box.classList.toggle('on',!!on);
+    document.body.style.cursor=on?'wait':'';
+    const scope=(btn&&btn.closest)?(btn.closest('section,.card,.item,.profile-card')||null):null;
+    if(scope)scope.classList.toggle('hc-form-bloqueado',!!on);
+  }
+  function botonesRiesgo(){
+    return Array.from(document.querySelectorAll('button')).filter(b=>{
+      const tx=(b.textContent||'').toLowerCase();
+      const oc=(b.getAttribute('onclick')||'').toLowerCase();
+      return /crear|agregar|guardar|confirmar|comprado|subir|eliminar|vaciar|quitar|carrito/.test(tx+' '+oc);
+    });
+  }
+  function bloquearBotones(on,btn,msg){
+    botonesRiesgo().forEach(b=>{
+      if(on){
+        if(!b.hasAttribute('data-hc-old-text'))b.setAttribute('data-hc-old-text',b.innerHTML);
+        b.disabled=true;
+        b.classList.add('hc-btn-procesando');
+      }else{
+        b.disabled=false;
+        b.classList.remove('hc-btn-procesando');
+        if(b.hasAttribute('data-hc-old-text')){b.innerHTML=b.getAttribute('data-hc-old-text');b.removeAttribute('data-hc-old-text');}
+      }
+    });
+    if(on&&btn){
+      if(!btn.hasAttribute('data-hc-old-text'))btn.setAttribute('data-hc-old-text',btn.innerHTML);
+      btn.innerHTML='⏳ Espere, subiendo a servidor...';
+    }
+  }
+  async function refrescarSeguro(){
+    try{if(typeof cargarTodo==='function')await cargarTodo();}catch(e){}
+    try{if(typeof hc1413RefrescarCarrito==='function')await hc1413RefrescarCarrito();}catch(e){}
+    try{if(typeof cargarCarritoOnline==='function')await cargarCarritoOnline();}catch(e){}
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+  }
+  function msgPara(fn){
+    if(/confirmar/i.test(fn))return 'Espere, confirmando compra en servidor...';
+    if(/quitar|vaciar|eliminar/i.test(fn))return 'Espere, eliminando en servidor...';
+    if(/guardar/i.test(fn))return 'Espere, guardando cambios en servidor...';
+    return 'Espere, subiendo a servidor...';
+  }
+  function envolver(nombre){
+    const fn=window[nombre];
+    if(typeof fn!=='function'||fn.__hc1415)return;
+    originales[nombre]=fn;
+    const wrap=async function(...args){
+      if(busy){
+        setWait(true,'Ya estoy trabajando, espera un momento...',lastBtn);
+        return;
+      }
+      const btn=lastBtn || (document.activeElement&&document.activeElement.tagName==='BUTTON'?document.activeElement:null);
+      busy=true;
+      window.HC1415_PROCESANDO=true;
+      bloquearBotones(true,btn,msgPara(nombre));
+      setWait(true,msgPara(nombre),btn);
+      try{
+        const res=await fn.apply(this,args);
+        await refrescarSeguro();
+        return res;
+      }catch(e){
+        throw e;
+      }finally{
+        setTimeout(()=>{
+          busy=false;
+          window.HC1415_PROCESANDO=false;
+          bloquearBotones(false,btn);
+          setWait(false,'',btn);
+          lastBtn=null;
+        },450);
+      }
+    };
+    wrap.__hc1415=true;
+    window[nombre]=wrap;
+    try{ eval(nombre+' = window["'+nombre+'"]'); }catch(e){}
+  }
+  function instalar(){
+    [
+      'agregarProductoNuevoAlCarrito',
+      'confirmarCarrito',
+      'confirmarProductoCarrito',
+      'quitarCarrito',
+      'vaciarCarrito',
+      'agregarRapidoCarrito',
+      'agregarAlCarrito',
+      'guardarProducto',
+      'guardarCambiosProducto',
+      'eliminarProducto'
+    ].forEach(envolver);
+  }
+  document.addEventListener('click',function(e){
+    const b=e.target.closest&&e.target.closest('button');
+    if(!b)return;
+    const tx=(b.textContent||'').toLowerCase();
+    const oc=(b.getAttribute('onclick')||'').toLowerCase();
+    if(/crear|agregar|guardar|confirmar|comprado|subir|eliminar|vaciar|quitar|carrito/.test(tx+' '+oc)){
+      lastBtn=b;
+      if(busy){e.preventDefault();e.stopImmediatePropagation();setWait(true,'Ya estoy trabajando, espera un momento...',b);}
+    }
+  },true);
+  window.addEventListener('load',()=>{instalar();setTimeout(instalar,900);setTimeout(instalar,2500);});
+  setTimeout(instalar,300);
+  setInterval(instalar,3000);
+})();
+</script>
 </html>
 <!-- HC 13.8.80: ajuste final texto del índice + activo más visible -->
 <style>
@@ -25367,5 +25883,2204 @@ body.dark .card:has(#hcDiagLog){display:none!important;}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(function(){asegurarUI();actualizarTotalesExtra();},300);});
   else setTimeout(function(){asegurarUI();actualizarTotalesExtra();},300);
   window.addEventListener('load',function(){setTimeout(function(){asegurarUI();actualizarTotalesExtra();},900);});
+})();
+</script>
+
+
+<script>
+/* HomeControl 14.4 - FIX carrito compartido sin columna precio
+   Supabase reportó que home_carrito_compartido NO tiene columna "precio".
+   Este parche evita insertar "precio" y usa precio_estimado cuando exista.
+   Conserva el botón de confirmar compra del carrito completo.
+*/
+(function(){
+  if(window.HC144_FIX_CARRITO_SIN_PRECIO)return;
+  window.HC144_FIX_CARRITO_SIN_PRECIO=true;
+
+  const TABLA_CARRITO="home_carrito_compartido";
+
+  function dbok(){
+    try{ if(typeof db!=="undefined" && db)return db; }catch(e){}
+    return window.db||null;
+  }
+  function n(v){ return Number(v||0)||0; }
+  function normalizaNombre(s){ return String(s||"").trim().replace(/\s+/g," "); }
+  function usuario(){
+    try{return sesion?.usuario || sesion?.nombre || localStorage.getItem("home_usuario_nombre") || "Jesus Vazquez";}catch(e){}
+    return "Jesus Vazquez";
+  }
+
+  async function insertarConIntentosCarrito(payloads){
+    const c=dbok();
+    if(!c)throw new Error("No hay conexión a Supabase.");
+    let ultimo="";
+    for(const payload of payloads){
+      try{
+        const r=await c.from(TABLA_CARRITO).insert(payload);
+        if(!r.error)return true;
+        ultimo=r.error.message || String(r.error);
+        console.warn("Intento carrito falló, probando formato más básico:", ultimo, payload);
+      }catch(e){
+        ultimo=e.message || String(e);
+      }
+    }
+    throw new Error(ultimo || "No se pudo agregar al carrito.");
+  }
+
+  window.insertarCarritoNuevo = async function(prod, datos){
+    const nombre=normalizaNombre(datos.nombre || datos.producto || prod?.nombre || "Producto");
+    const cantidad=n(datos.cantidad) || 1;
+    const precioEstimado=n(datos.precio ?? datos.precio_estimado ?? prod?.precio ?? 0);
+    const tienda=normalizaNombre(datos.tienda || prod?.tienda_preferida || prod?.tienda || "Sin tienda");
+
+    const payloads=[
+      {
+        producto_id:prod?.id || null,
+        nombre:nombre,
+        producto:nombre,
+        cantidad:cantidad,
+        unidad:datos.unidad || prod?.unidad || "pz",
+        precio_estimado:precioEstimado,
+        total_estimado:cantidad*precioEstimado,
+        tienda:tienda,
+        motivo:"Producto nuevo / modo aprendizaje",
+        agregado_por:usuario(),
+        estado:"pendiente",
+        activo:true
+      },
+      {
+        producto_id:prod?.id || null,
+        nombre:nombre,
+        producto:nombre,
+        cantidad:cantidad,
+        unidad:datos.unidad || prod?.unidad || "pz",
+        precio_estimado:precioEstimado,
+        tienda:tienda,
+        motivo:"Producto nuevo / modo aprendizaje",
+        agregado_por:usuario(),
+        estado:"pendiente",
+        activo:true
+      },
+      {
+        producto_id:prod?.id || null,
+        producto:nombre,
+        cantidad:cantidad,
+        unidad:datos.unidad || prod?.unidad || "pz",
+        precio_estimado:precioEstimado,
+        tienda:tienda,
+        motivo:"Producto nuevo / modo aprendizaje",
+        agregado_por:usuario()
+      },
+      {
+        producto_id:prod?.id || null,
+        producto:nombre,
+        cantidad:cantidad,
+        precio_estimado:precioEstimado,
+        tienda:tienda
+      },
+      {
+        producto_id:prod?.id || null,
+        producto:nombre,
+        cantidad:cantidad,
+        tienda:tienda
+      },
+      {
+        producto:nombre,
+        cantidad:cantidad,
+        tienda:tienda
+      },
+      {
+        producto:nombre,
+        cantidad:cantidad
+      }
+    ];
+
+    return await insertarConIntentosCarrito(payloads);
+  };
+
+  window.agregarProductoNuevoAlCarrito = async function(){
+    try{
+      const nombre=normalizaNombre(document.getElementById("hcNuevoNombre")?.value);
+      const cantidad=n(document.getElementById("hcNuevoCantidad")?.value);
+      const unidad=document.getElementById("hcNuevoUnidad")?.value || "pz";
+      const precio=n(document.getElementById("hcNuevoPrecio")?.value);
+      const tienda=normalizaNombre(document.getElementById("hcNuevoTienda")?.value) || "Sin tienda";
+      const catSel=document.getElementById("hcNuevoCategoria");
+      const categoria_id=catSel?.value || "eventual";
+      const categoria_texto=catSel?.selectedOptions?.[0]?.textContent || "Compra única / eventual";
+      const guardar=document.getElementById("hcNuevoGuardarInventario")?.checked !== false;
+
+      if(!nombre)return alert("Escribe el nombre del producto.");
+      if(cantidad<=0)return alert("Escribe la cantidad.");
+      if(precio<0)return alert("Escribe el precio.");
+
+      let prod={id:null,nombre,unidad,precio,tienda_preferida:tienda};
+      if(guardar && typeof window.crearProductoNuevo==="function"){
+        prod=await window.crearProductoNuevo({nombre,categoria_id,categoria_texto,cantidad,unidad,precio,tienda});
+      }
+
+      await window.insertarCarritoNuevo(prod,{nombre,cantidad,unidad,precio,tienda});
+
+      try{ if(typeof cargarProductos==="function")await cargarProductos(); }catch(e){}
+      try{ if(typeof cargarCarritoSupabase==="function")await cargarCarritoSupabase(); }catch(e){}
+      try{ if(typeof mostrarCarrito==="function")mostrarCarrito(); }catch(e){}
+      try{ if(typeof actualizarPanelCarritoRapido==="function")actualizarPanelCarritoRapido(); }catch(e){}
+      try{ if(typeof actualizarPantalla==="function")actualizarPantalla(); }catch(e){}
+
+      ["hcNuevoNombre","hcNuevoCantidad","hcNuevoPrecio","hcNuevoTienda"].forEach(id=>{
+        const el=document.getElementById(id);
+        if(el)el.value = id==="hcNuevoCantidad" ? "1" : "";
+      });
+
+      alert("Producto nuevo agregado al carrito. El precio quedó como estimado para confirmar al comprar.");
+    }catch(e){
+      alert("No se pudo agregar producto nuevo: "+(e.message||e));
+    }
+  };
+})();
+</script>
+
+<script>
+/* HomeControl 14.6 - FIX definitivo columnas reales home_carrito_compartido
+   Tu tabla usa nombre y precio_estimado; NO existen producto, precio ni total_estimado.
+*/
+(function(){
+  window.HC146_FIX_PRODUCTO_CARRITO=true;
+  const TABLA_CARRITO="home_carrito_compartido";
+  function dbok(){ try{ if(typeof db!=="undefined" && db) return db; }catch(e){} return window.db||null; }
+  function n(v){ return Number(v||0)||0; }
+  function txt(v,def=""){ v=String(v??"").trim(); return v || def; }
+  function usuario(){ try{return sesion?.usuario || sesion?.nombre || localStorage.getItem("home_usuario_nombre") || "Jesus Vazquez";}catch(e){} return "Jesus Vazquez"; }
+
+  async function insertarCarritoPayloadSeguro(payload){
+    const c=dbok();
+    if(!c) throw new Error("No hay conexión a Supabase.");
+    const limpio={};
+    ["producto_id","nombre","cantidad","unidad","tienda","precio_estimado","motivo","agregado_por","estado","activo","precio_normal","precio_oferta","precio_aplicado","categoria"].forEach(k=>{
+      if(payload[k]!==undefined) limpio[k]=payload[k];
+    });
+    const r=await c.from(TABLA_CARRITO).insert(limpio);
+    if(r.error) throw r.error;
+    return true;
+  }
+
+  window.insertarCarritoNuevo = async function(prod, datos){
+    const nombre=txt(datos?.nombre || prod?.nombre,"Producto");
+    const cantidad=n(datos?.cantidad) || 1;
+    const precio=n(datos?.precio ?? datos?.precio_estimado ?? prod?.precio ?? prod?.precio_estimado ?? 0);
+    const tienda=txt(datos?.tienda || prod?.tienda_preferida || prod?.tienda,"Sin tienda");
+    const unidad=txt(datos?.unidad || prod?.unidad,"pz");
+    const categoria=txt(datos?.categoria || datos?.categoria_texto || prod?.categoria,"Comestibles");
+
+    return await insertarCarritoPayloadSeguro({
+      producto_id: prod?.id || null,
+      nombre,
+      cantidad,
+      unidad,
+      tienda,
+      precio_estimado: precio,
+      precio_normal: precio,
+      precio_aplicado: precio,
+      precio_oferta: 0,
+      categoria,
+      motivo: "Producto nuevo / modo aprendizaje",
+      agregado_por: usuario(),
+      estado: "pendiente",
+      activo: true
+    });
+  };
+
+  window.agregarProductoNuevoAlCarrito = async function(){
+    try{
+      const nombre=txt(document.getElementById("hcNuevoNombre")?.value);
+      const cantidad=n(document.getElementById("hcNuevoCantidad")?.value);
+      const unidad=txt(document.getElementById("hcNuevoUnidad")?.value,"pz");
+      const precio=n(document.getElementById("hcNuevoPrecio")?.value);
+      const tienda=txt(document.getElementById("hcNuevoTienda")?.value,"Sin tienda");
+      const catSel=document.getElementById("hcNuevoCategoria");
+      const categoria_id=catSel?.value || "eventual";
+      const categoria_texto=txt(catSel?.selectedOptions?.[0]?.textContent,"Comestibles");
+      const guardar=document.getElementById("hcNuevoGuardarInventario")?.checked !== false;
+
+      if(!nombre) return alert("Escribe el nombre del producto.");
+      if(cantidad<=0) return alert("Escribe la cantidad.");
+      if(precio<0) return alert("Escribe el precio.");
+
+      let prod={id:null,nombre,unidad,precio,tienda_preferida:tienda,categoria:categoria_texto};
+      if(guardar && typeof window.crearProductoNuevo==="function"){
+        prod=await window.crearProductoNuevo({nombre,categoria_id,categoria_texto,cantidad,unidad,precio,tienda});
+      }
+
+      await window.insertarCarritoNuevo(prod,{nombre,cantidad,unidad,precio,tienda,categoria:categoria_texto});
+
+      try{ if(typeof cargarTodo==="function") await cargarTodo(); }catch(e){}
+      try{ if(typeof cargarProductos==="function") await cargarProductos(); }catch(e){}
+      try{ if(typeof cargarCarritoSupabase==="function") await cargarCarritoSupabase(); }catch(e){}
+      try{ if(typeof mostrarCarrito==="function") mostrarCarrito(); }catch(e){}
+      try{ if(typeof actualizarPanelCarritoRapido==="function") actualizarPanelCarritoRapido(); }catch(e){}
+      try{ if(typeof actualizarPantalla==="function") actualizarPantalla(); }catch(e){}
+
+      ["hcNuevoNombre","hcNuevoCantidad","hcNuevoPrecio","hcNuevoTienda"].forEach(id=>{
+        const el=document.getElementById(id);
+        if(el) el.value = id==="hcNuevoCantidad" ? "1" : "";
+      });
+
+      alert("Producto agregado al carrito correctamente.");
+    }catch(e){
+      alert("No se pudo agregar producto nuevo: "+(e.message||e));
+    }
+  };
+})();
+</script>
+
+<script>
+/* HomeControl 14.7 - FIX: producto nuevo al carrito SIN duplicar inventario
+   Regla nueva:
+   - Crear y agregar al carrito NO suma cantidad al inventario.
+   - Si se marca guardar en inventario, se crea/usa el producto con cantidad 0.
+   - La cantidad real solo se suma al presionar ✅ del producto o confirmar carrito completo.
+*/
+(function(){
+  window.HC147_FIX_SIN_DUPLICAR_INVENTARIO=true;
+
+  const TABLA_PRODUCTOS="despensa_productos";
+
+  function dbok(){ try{ if(typeof db!=="undefined" && db) return db; }catch(e){} return window.db||null; }
+  function n(v){ return Number(v||0)||0; }
+  function txt(v,def=""){ v=String(v??"").trim().replace(/\s+/g," "); return v || def; }
+  function normaliza(v){ return txt(v).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+  function usuario(){ try{return sesion?.usuario || sesion?.nombre || localStorage.getItem("home_usuario_nombre") || "Jesus Vazquez";}catch(e){} return "Jesus Vazquez"; }
+
+  function productosListaSegura(){
+    try{ if(Array.isArray(window.productos)) return window.productos; }catch(e){}
+    try{ if(typeof productos!=="undefined" && Array.isArray(productos)) return productos; }catch(e){}
+    return [];
+  }
+  function setProductosLista(arr){
+    try{ window.productos=arr; }catch(e){}
+    try{ productos=arr; }catch(e){}
+  }
+  function productoExistenteLocal(nombre){
+    const key=normaliza(nombre);
+    return productosListaSegura().find(p=>normaliza(p.nombre)===key) || null;
+  }
+
+  async function buscarProductoPorNombreNube(nombre){
+    const c=dbok(); if(!c) return null;
+    try{
+      let r=await c.from(TABLA_PRODUCTOS).select('*').ilike('nombre',nombre).limit(1);
+      if(!r.error && r.data && r.data.length) return r.data[0];
+    }catch(e){}
+    return null;
+  }
+
+  async function insertarProductoCantidadCero(datos){
+    const c=dbok(); if(!c) throw new Error("No hay conexión a Supabase.");
+    const nombre=txt(datos.nombre,"Producto");
+    const unidad=txt(datos.unidad,"pz");
+    const precio=n(datos.precio);
+    const tienda=txt(datos.tienda,"Sin tienda");
+    const categoriaTexto=txt(datos.categoria_texto || datos.categoria,"Comestibles");
+    const categoriaId=txt(datos.categoria_id,"");
+
+    const base={
+      nombre,
+      cantidad:0,
+      minimo:0,
+      unidad,
+      precio,
+      tienda,
+      tienda_preferida:tienda,
+      categoria:categoriaTexto,
+      activo:true,
+      actualizado:new Date().toISOString(),
+      notas:"Producto creado desde carrito. Cantidad inicial 0 para evitar duplicar; se sumará al confirmar la compra.",
+      creado_por:usuario()
+    };
+    if(categoriaId && categoriaId!=="eventual") base.categoria_id=categoriaId;
+
+    const intentos=[
+      base,
+      {nombre,cantidad:0,minimo:0,unidad,precio,tienda,tienda_preferida:tienda,categoria:categoriaTexto,activo:true,actualizado:new Date().toISOString()},
+      {nombre,cantidad:0,minimo:0,unidad,precio,tienda,categoria:categoriaTexto,activo:true},
+      {nombre,cantidad:0,minimo:0,precio,tienda,activo:true},
+      {nombre,cantidad:0,minimo:0,precio,activo:true},
+      {nombre,cantidad:0,minimo:0}
+    ];
+
+    let ultimo="";
+    for(const payload of intentos){
+      const r=await c.from(TABLA_PRODUCTOS).insert(payload).select('*').single();
+      if(!r.error){
+        const arr=productosListaSegura();
+        if(!arr.some(p=>String(p.id)===String(r.data.id))) arr.push(r.data);
+        setProductosLista(arr);
+        return r.data;
+      }
+      ultimo=r.error.message || String(r.error);
+      const msg=ultimo.toLowerCase();
+      if(msg.includes('duplicate') || msg.includes('unique')){
+        const existente=await buscarProductoPorNombreNube(nombre);
+        if(existente) return existente;
+      }
+    }
+    throw new Error(ultimo || "No se pudo crear producto.");
+  }
+
+  window.crearProductoNuevo = async function(datos){
+    const nombre=txt(datos?.nombre);
+    if(!nombre) throw new Error("Falta el nombre del producto.");
+
+    // IMPORTANTE: no se registra compra ni se suma cantidad aquí.
+    // Solo buscamos o creamos el producto con stock 0.
+    const local=productoExistenteLocal(nombre);
+    if(local) return local;
+
+    const nube=await buscarProductoPorNombreNube(nombre);
+    if(nube){
+      const arr=productosListaSegura();
+      if(!arr.some(p=>String(p.id)===String(nube.id))) arr.push(nube);
+      setProductosLista(arr);
+      return nube;
+    }
+
+    return await insertarProductoCantidadCero(datos||{});
+  };
+
+  // Reemplazo para que crear producto nuevo NO lo sume al inventario todavía.
+  window.agregarProductoNuevoAlCarrito = async function(){
+    try{
+      const nombre=txt(document.getElementById("hcNuevoNombre")?.value);
+      const cantidad=n(document.getElementById("hcNuevoCantidad")?.value);
+      const unidad=txt(document.getElementById("hcNuevoUnidad")?.value,"pz");
+      const precio=n(document.getElementById("hcNuevoPrecio")?.value);
+      const tienda=txt(document.getElementById("hcNuevoTienda")?.value,"Sin tienda");
+      const catSel=document.getElementById("hcNuevoCategoria");
+      const categoria_id=catSel?.value || "eventual";
+      const categoria_texto=txt(catSel?.selectedOptions?.[0]?.textContent,"Comestibles");
+      const guardar=document.getElementById("hcNuevoGuardarInventario")?.checked !== false;
+
+      if(!nombre) return alert("Escribe el nombre del producto.");
+      if(cantidad<=0) return alert("Escribe la cantidad.");
+      if(precio<0) return alert("Escribe el precio.");
+
+      let prod={id:null,nombre,unidad,precio,tienda_preferida:tienda,categoria:categoria_texto};
+      if(guardar){
+        prod=await window.crearProductoNuevo({nombre,categoria_id,categoria_texto,cantidad:0,unidad,precio,tienda});
+      }
+
+      await window.insertarCarritoNuevo(prod,{nombre,cantidad,unidad,precio,tienda,categoria:categoria_texto});
+
+      try{ if(typeof cargarTodo==="function") await cargarTodo(); }catch(e){}
+      try{ if(typeof cargarProductos==="function") await cargarProductos(); }catch(e){}
+      try{ if(typeof cargarCarritoSupabase==="function") await cargarCarritoSupabase(); }catch(e){}
+      try{ if(typeof mostrarCarrito==="function") mostrarCarrito(); }catch(e){}
+      try{ if(typeof actualizarPanelCarritoRapido==="function") actualizarPanelCarritoRapido(); }catch(e){}
+      try{ if(typeof actualizarPantalla==="function") actualizarPantalla(); }catch(e){}
+
+      ["hcNuevoNombre","hcNuevoCantidad","hcNuevoPrecio","hcNuevoTienda"].forEach(id=>{
+        const el=document.getElementById(id);
+        if(el) el.value = id==="hcNuevoCantidad" ? "1" : "";
+      });
+
+      alert("Producto agregado al carrito. Inventario queda en 0 hasta confirmar compra.");
+    }catch(e){
+      alert("No se pudo agregar producto nuevo: "+(e.message||e));
+    }
+  };
+
+  // El carrito compartido usa nombre, no producto. Aseguramos que confirmar encuentre el producto.
+  window.hcBuscarProductoCarrito = function(item){
+    if(!item) return null;
+    const arr=productosListaSegura();
+    let prod=null;
+    if(typeof hcUUIDValido==='function' && hcUUIDValido(item.producto_id)){
+      prod=arr.find(p=>String(p.id)===String(item.producto_id));
+    }
+    if(!prod){
+      const nom=normaliza(item.producto || item.nombre);
+      prod=arr.find(p=>normaliza(p.nombre)===nom) || null;
+    }
+    return prod;
+  };
+})();
+</script>
+
+<script id="hc-14-8-fix-confirmar-carrito-sin-repetir">
+/* HomeControl 14.8
+   FIX puntual:
+   - Confirmar compra individual o carrito completo ya no deja productos pendientes en home_carrito_compartido.
+   - Se marca cada renglón como activo=false / estado=comprado y también intenta borrarlo.
+   - Antes de sumar inventario lee la cantidad actual desde Supabase para evitar sumar sobre datos viejos.
+   - Evita doble click / doble confirmación mientras está guardando.
+*/
+(function(){
+  if(window.HC_148_CONFIRMAR_CARRITO_FIX)return;
+  window.HC_148_CONFIRMAR_CARRITO_FIX=true;
+
+  const TAB_CARRITO='home_carrito_compartido';
+  const TAB_PRODUCTOS='despensa_productos';
+  const TAB_COMPRAS='despensa_compras';
+  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  let guardando=false;
+
+  function dbx(){try{if(typeof db!=='undefined'&&db)return db;}catch(e){} return window.db||null;}
+  function n(v){return Number(String(v??0).replace(',','.'))||0;}
+  function hoy(){try{return typeof hoyISO==='function'?hoyISO():new Date().toISOString().slice(0,10)}catch(e){return new Date().toISOString().slice(0,10)}}
+  function uuid(v){return UUID.test(String(v||''));}
+  function moneyX(v){try{return typeof money==='function'?money(v):n(v).toFixed(2)}catch(e){return n(v).toFixed(2)}}
+  function cart(){try{if(Array.isArray(window.carrito))return window.carrito;}catch(e){} try{if(Array.isArray(carrito))return carrito;}catch(e){} return [];}
+  function setCart(a){a=Array.isArray(a)?a:[]; try{window.carrito=a;}catch(e){} try{carrito=a;}catch(e){} try{carritoActual=a;}catch(e){} try{itemsCarrito=a;}catch(e){} try{localStorage.removeItem('despensaCarrito');}catch(e){} }
+  function nombreItem(it){return String(it?.producto||it?.nombre||'Producto').trim()||'Producto';}
+  function idCarrito(it){return it?.cloud_id||it?.tmp||it?.id||null;}
+  function productoId(it){return uuid(it?.producto_id)?String(it.producto_id):null;}
+
+  async function productoActual(cli,it){
+    const id=productoId(it);
+    if(id){
+      const r=await cli.from(TAB_PRODUCTOS).select('*').eq('id',id).maybeSingle();
+      if(!r.error && r.data)return r.data;
+    }
+    const nom=nombreItem(it);
+    const r=await cli.from(TAB_PRODUCTOS).select('*').ilike('nombre',nom).limit(1);
+    if(!r.error && r.data && r.data[0])return r.data[0];
+    return null;
+  }
+
+  async function desactivarFilaCarrito(cli,it){
+    const id=idCarrito(it);
+    if(!uuid(id))return;
+    // Primero marcar como comprada, porque tu tabla sí tiene estado y activo.
+    try{
+      const u=await cli.from(TAB_CARRITO).update({activo:false,estado:'comprado'}).eq('id',id);
+      if(u.error)console.warn('No pude marcar carrito como comprado:',u.error.message||u.error);
+    }catch(e){console.warn('No pude marcar carrito como comprado:',e);}
+    // Después intenta borrar. Si RLS no permite borrar, al menos ya no debe aparecer por activo=false.
+    try{
+      const d=await cli.from(TAB_CARRITO).delete().eq('id',id);
+      if(d.error)console.warn('No pude borrar fila carrito:',d.error.message||d.error);
+    }catch(e){console.warn('No pude borrar fila carrito:',e);}
+  }
+
+  async function siguePendiente(cli,it){
+    const id=idCarrito(it);
+    if(!uuid(id))return true;
+    try{
+      const r=await cli.from(TAB_CARRITO).select('id,activo,estado').eq('id',id).maybeSingle();
+      if(r.error || !r.data)return true;
+      return r.data.activo!==false && String(r.data.estado||'pendiente')==='pendiente';
+    }catch(e){return true;}
+  }
+
+  async function guardarCompraYSumar(cli,it,cantidad,precio,tienda){
+    const prod=await productoActual(cli,it);
+    const pid=prod?.id || productoId(it);
+    if(!uuid(pid))throw new Error('No encontré el producto de inventario para '+nombreItem(it));
+    const total=cantidad*precio;
+    const compra={
+      producto_id:pid,
+      producto:nombreItem(it),
+      tienda:tienda||it.tienda||prod?.tienda_preferida||'Sin tienda',
+      cantidad,
+      precio,
+      total,
+      fecha:hoy(),
+      usuario:window.sesion?.usuario||window.sesion?.nombre||''
+    };
+    const r1=await cli.from(TAB_COMPRAS).insert(compra);
+    if(r1.error)throw r1.error;
+
+    const cantidadActual=n(prod?.cantidad);
+    const nuevaCantidad=cantidadActual+cantidad;
+    const r2=await cli.from(TAB_PRODUCTOS).update({
+      cantidad:nuevaCantidad,
+      precio,
+      tienda_preferida:compra.tienda,
+      actualizado:new Date().toISOString()
+    }).eq('id',pid);
+    if(r2.error)throw r2.error;
+
+    try{ if(typeof hcRegistrarHistorialPrecio==='function') await hcRegistrarHistorialPrecio({...it,producto_id:pid,cantidad,precio,total,tienda:compra.tienda},prod); }catch(e){}
+    return {...compra, inventario_anterior:cantidadActual, inventario_nuevo:nuevaCantidad};
+  }
+
+  async function refrescarTodo(){
+    try{setCart([]);}catch(e){}
+    try{if(typeof cargarTodo==='function')await cargarTodo();}catch(e){}
+    try{if(typeof window.hc133CargarCarritoOnline==='function')await window.hc133CargarCarritoOnline();}catch(e){}
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+  }
+
+  window.confirmarProductoCarrito=async function(tmp){
+    if(guardando)return alert('Estoy guardando la compra anterior, espera un momento.');
+    const cli=dbx(); if(!cli)return alert('No hay conexión con Supabase.');
+    try{ if(typeof window.hc133CargarCarritoOnline==='function') await window.hc133CargarCarritoOnline(); }catch(e){}
+    const item=cart().find(x=>String(x.tmp)===String(tmp)||String(x.cloud_id)===String(tmp)||String(x.id)===String(tmp));
+    if(!item)return alert('No encontré ese producto en el carrito.');
+    if(!(await siguePendiente(cli,item)))return alert('Ese producto ya estaba confirmado. Actualizaré el carrito.');
+
+    const cantidadTxt=prompt(`Cantidad comprada de ${nombreItem(item)}:`,String(n(item.cantidad)||1));
+    if(cantidadTxt===null)return;
+    const cantidad=n(cantidadTxt);
+    if(cantidad<=0)return alert('Cantidad inválida.');
+    const precioTxt=prompt(`Precio unitario pagado de ${nombreItem(item)}:`,String(n(item.precio||item.precio_estimado)));
+    if(precioTxt===null)return;
+    const precio=n(precioTxt);
+    if(precio<0)return alert('Precio inválido.');
+    const tiendaTxt=prompt('Tienda donde lo compraste:',item.tienda||'Sin tienda');
+    if(tiendaTxt===null)return;
+    const tienda=String(tiendaTxt||item.tienda||'Sin tienda').trim()||'Sin tienda';
+    const total=cantidad*precio;
+    if(!confirm(`¿Confirmar solo este producto?\n\n${nombreItem(item)}\nCantidad: ${cantidad}\nPrecio: $${moneyX(precio)}\nTotal: $${moneyX(total)}\n\nSe sumará al inventario y se quitará del carrito.`))return;
+
+    guardando=true;
+    try{
+      try{if(typeof setSync==='function')setSync('Guardando producto comprado...');}catch(e){}
+      const compra=await guardarCompraYSumar(cli,item,cantidad,precio,tienda);
+      await desactivarFilaCarrito(cli,item);
+      try{if(typeof auditar==='function')await auditar('confirmar_producto_carrito',nombreItem(item),compra);}catch(e){}
+      setCart(cart().filter(x=>String(x.tmp)!==String(tmp)&&String(x.cloud_id)!==String(tmp)&&String(x.id)!==String(tmp)));
+      await refrescarTodo();
+      alert('Producto confirmado y quitado del carrito.');
+    }catch(e){alert(e.message||e)}
+    finally{guardando=false;}
+  };
+
+  window.confirmarCarrito=async function(){
+    if(guardando)return alert('Estoy guardando la compra anterior, espera un momento.');
+    const cli=dbx(); if(!cli)return alert('No hay conexión con Supabase.');
+    try{ if(typeof window.hc133CargarCarritoOnline==='function') await window.hc133CargarCarritoOnline(); }catch(e){}
+    let lista=cart().slice();
+    if(!lista.length)return alert('El carrito está vacío');
+    if(!confirm(`¿Confirmar compra completa?\n\nSe guardarán ${lista.length} producto(s), se sumarán al inventario y se quitarán del carrito.`))return;
+
+    guardando=true;
+    const hechos=[];
+    try{
+      try{if(typeof setSync==='function')setSync('Confirmando carrito...');}catch(e){}
+      for(const item of lista){
+        if(!(await siguePendiente(cli,item))){
+          await desactivarFilaCarrito(cli,item);
+          continue;
+        }
+        const cantidad=n(item.cantidad)||1;
+        const precio=n(item.precio||item.precio_estimado);
+        const tienda=item.tienda||'Sin tienda';
+        const compra=await guardarCompraYSumar(cli,item,cantidad,precio,tienda);
+        hechos.push(compra);
+        await desactivarFilaCarrito(cli,item);
+      }
+      try{if(typeof auditar==='function')await auditar('confirmar_carrito',`${hechos.length} productos`,{carrito:hechos});}catch(e){}
+      setCart([]);
+      await refrescarTodo();
+      alert('Compra confirmada y carrito limpiado.');
+    }catch(e){alert(e.message||e)}
+    finally{guardando=false;}
+  };
+})();
+</script>
+
+<script id="hc-14-9-carrito-sin-duplicados-final">
+/* HomeControl 14.9 - cierre limpio carrito/inventario
+   Objetivo: eliminar conflictos de parches anteriores.
+   - El carrito se deduplica por producto_id o nombre normalizado.
+   - Si Supabase trae renglones duplicados, se dejan inactivos los repetidos.
+   - Confirmar compra procesa una sola vez cada producto y luego lo marca comprado/activo=false.
+   - Crear producto nuevo para carrito crea inventario en cantidad 0; la cantidad real solo se suma al confirmar.
+*/
+(function(){
+  if(window.HC_149_CARRITO_FINAL)return;
+  window.HC_149_CARRITO_FINAL=true;
+
+  const TAB_CARRITO='home_carrito_compartido';
+  const TAB_PRODUCTOS='despensa_productos';
+  const TAB_COMPRAS='despensa_compras';
+  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  let guardando=false;
+  let cargando=false;
+
+  function cli(){try{if(typeof db!=='undefined'&&db)return db;}catch(e){} return window.db||null;}
+  function isUuid(v){return UUID.test(String(v||''));}
+  function num(v){return Number(String(v??0).replace(',','.'))||0;}
+  function hoy(){try{return typeof hoyISO==='function'?hoyISO():new Date().toISOString().slice(0,10)}catch(e){return new Date().toISOString().slice(0,10)}}
+  function mon(v){try{return typeof money==='function'?money(v):num(v).toFixed(2)}catch(e){return num(v).toFixed(2)}}
+  function norm(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();}
+  function nombre(it){return String(it?.producto||it?.nombre||'Producto').trim()||'Producto';}
+  function rowId(it){const ids=[it?.cloud_id,it?.id,it?.tmp]; return ids.find(isUuid)||null;}
+  function prodId(it){return isUuid(it?.producto_id)?String(it.producto_id):null;}
+  function keyItem(it){return prodId(it) || ('nombre:'+norm(nombre(it)));}
+  function user(){return window.sesion?.usuario||window.sesion?.nombre||localStorage.getItem('home_usuario_nombre')||'Jesus Vazquez';}
+  function getProductos(){try{if(Array.isArray(window.productos))return window.productos;}catch(e){} try{if(Array.isArray(productos))return productos;}catch(e){} return [];}
+  function setProductos(a){try{window.productos=a;}catch(e){} try{productos=a;}catch(e){}}
+  function getCart(){try{if(Array.isArray(window.carrito))return window.carrito;}catch(e){} try{if(Array.isArray(carrito))return carrito;}catch(e){} return [];}
+  function setCart(a){a=Array.isArray(a)?a:[];try{window.carrito=a;}catch(e){} try{carrito=a;}catch(e){} try{carritoActual=a;}catch(e){} try{itemsCarrito=a;}catch(e){} try{localStorage.removeItem('despensaCarrito');}catch(e){}}
+
+  function itemDesdeFila(r){
+    const cantidad=num(r.cantidad)||1;
+    const precio=num(r.precio_aplicado||r.precio_estimado||r.precio_normal||0);
+    return {
+      tmp:r.id, cloud_id:r.id, id:r.id,
+      producto_id:r.producto_id||null,
+      producto:r.nombre||'Producto', nombre:r.nombre||'Producto',
+      categoria:r.categoria||'', cantidad, unidad:r.unidad||'', tienda:r.tienda||'Sin tienda',
+      precio, precio_estimado:precio, total:cantidad*precio,
+      nota:r.motivo||'', motivo:r.motivo||'', estado:r.estado||'pendiente', activo:r.activo!==false,
+      created_at:r.created_at||''
+    };
+  }
+
+  function dedupeLocal(arr){
+    const seen=new Set(), out=[], duplicados=[];
+    (arr||[]).forEach(it=>{
+      const k=keyItem(it);
+      if(seen.has(k)){duplicados.push(it); return;}
+      seen.add(k); out.push(it);
+    });
+    return {out,duplicados};
+  }
+
+  async function desactivarIds(ids,estado='duplicado'){
+    const c=cli(); if(!c)return;
+    ids=[...new Set((ids||[]).filter(isUuid))];
+    if(!ids.length)return;
+    try{
+      const r=await c.from(TAB_CARRITO).update({activo:false,estado}).in('id',ids);
+      if(r.error)console.warn('No pude desactivar carrito:',r.error.message||r.error);
+    }catch(e){console.warn('No pude desactivar carrito:',e);}
+  }
+
+  async function cargarCarritoLimpio(){
+    if(cargando)return getCart();
+    const c=cli(); if(!c){setCart([]);return [];}
+    cargando=true;
+    try{
+      const r=await c.from(TAB_CARRITO).select('*').eq('activo',true).eq('estado','pendiente').order('created_at',{ascending:true});
+      if(r.error)throw r.error;
+      const arr=(r.data||[]).map(itemDesdeFila);
+      const d=dedupeLocal(arr);
+      const idsDup=d.duplicados.map(rowId).filter(Boolean);
+      if(idsDup.length)await desactivarIds(idsDup,'duplicado');
+      setCart(d.out);
+      try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+      return d.out;
+    }finally{cargando=false;}
+  }
+
+  async function productoPorNombreNube(nombreProd){
+    const c=cli(); if(!c)return null;
+    const n=norm(nombreProd); if(!n)return null;
+    try{
+      const r=await c.from(TAB_PRODUCTOS).select('*').limit(300);
+      if(!r.error && r.data){
+        return (r.data||[]).find(p=>norm(p.nombre)===n)||null;
+      }
+    }catch(e){}
+    return null;
+  }
+
+  async function productoActual(it){
+    const c=cli(); if(!c)return null;
+    const id=prodId(it);
+    if(id){
+      const r=await c.from(TAB_PRODUCTOS).select('*').eq('id',id).maybeSingle();
+      if(!r.error && r.data)return r.data;
+    }
+    const local=getProductos().find(p=>norm(p.nombre)===norm(nombre(it)))||null;
+    if(local)return local;
+    return await productoPorNombreNube(nombre(it));
+  }
+
+  async function insertarProductoCantidadCero(datos){
+    const c=cli(); if(!c)throw new Error('No hay conexión con Supabase.');
+    const nombreProd=String(datos.nombre||'').trim();
+    const existenteLocal=getProductos().find(p=>norm(p.nombre)===norm(nombreProd));
+    if(existenteLocal)return existenteLocal;
+    const existenteNube=await productoPorNombreNube(nombreProd);
+    if(existenteNube)return existenteNube;
+
+    const payload={
+      nombre:nombreProd,
+      categoria:datos.categoria_texto||datos.categoria||'Sin categoría',
+      cantidad:0,
+      unidad:datos.unidad||'pz',
+      precio:num(datos.precio),
+      tienda_preferida:datos.tienda||'Sin tienda',
+      notas:'Primera compra. Si se repite, HomeControl aprenderá el patrón.',
+      actualizado:new Date().toISOString()
+    };
+    if(datos.categoria_id)payload.categoria_id=datos.categoria_id;
+    let r=await c.from(TAB_PRODUCTOS).insert(payload).select('*').single();
+    if(r.error){
+      // Si alguna columna no existe en una versión de tabla, intenta solo campos básicos.
+      const simple={nombre:payload.nombre,categoria:payload.categoria,cantidad:0,unidad:payload.unidad,precio:payload.precio,tienda_preferida:payload.tienda_preferida,actualizado:payload.actualizado};
+      r=await c.from(TAB_PRODUCTOS).insert(simple).select('*').single();
+    }
+    if(r.error)throw r.error;
+    const arr=getProductos(); arr.push(r.data); setProductos(arr);
+    return r.data;
+  }
+
+  window.crearProductoNuevo=insertarProductoCantidadCero;
+
+  async function existeCarritoPorProductoONombre(producto_id,nombreProd){
+    const c=cli(); if(!c)return null;
+    const activos=await cargarCarritoLimpio();
+    const k=producto_id&&isUuid(producto_id)?String(producto_id):('nombre:'+norm(nombreProd));
+    return activos.find(x=>keyItem(x)===k || (norm(nombre(x))===norm(nombreProd)))||null;
+  }
+
+  async function insertarCarritoSeguro(prod,datos){
+    const c=cli(); if(!c)throw new Error('No hay conexión con Supabase.');
+    const nombreProd=String(datos.nombre||datos.producto||prod?.nombre||'Producto').trim();
+    const producto_id=isUuid(prod?.id)?prod.id:null;
+    const ya=await existeCarritoPorProductoONombre(producto_id,nombreProd);
+    if(ya){alert('Ese producto ya está en el carrito. No lo dupliqué.'); return ya;}
+    const cantidad=num(datos.cantidad)||1;
+    const precio=num(datos.precio ?? datos.precio_estimado ?? prod?.precio ?? 0);
+    const payload={
+      producto_id,
+      nombre:nombreProd,
+      cantidad,
+      unidad:datos.unidad||prod?.unidad||'pz',
+      tienda:datos.tienda||prod?.tienda_preferida||'Sin tienda',
+      precio_estimado:precio,
+      precio_normal:precio,
+      precio_oferta:0,
+      precio_aplicado:precio,
+      motivo:datos.nota||datos.motivo||'Carrito',
+      agregado_por:user(),
+      estado:'pendiente',
+      activo:true,
+      categoria:datos.categoria||prod?.categoria||null
+    };
+    const r=await c.from(TAB_CARRITO).insert(payload).select('*').single();
+    if(r.error)throw r.error;
+    await cargarCarritoLimpio();
+    return itemDesdeFila(r.data);
+  }
+
+  window.insertarCarritoNuevo=insertarCarritoSeguro;
+
+  window.agregarProductoNuevoAlCarrito=async function(){
+    try{
+      const nombreProd=String(document.getElementById('hcNuevoNombre')?.value||'').trim();
+      const cantidad=num(document.getElementById('hcNuevoCantidad')?.value);
+      const unidad=document.getElementById('hcNuevoUnidad')?.value || 'pz';
+      const precio=num(document.getElementById('hcNuevoPrecio')?.value);
+      const tienda=String(document.getElementById('hcNuevoTienda')?.value||'Sin tienda').trim()||'Sin tienda';
+      const catSel=document.getElementById('hcNuevoCategoria');
+      const categoria_id=catSel?.value||'';
+      const categoria_texto=catSel?.selectedOptions?.[0]?.textContent||'Sin categoría';
+      const guardar=document.getElementById('hcNuevoGuardarInventario')?.checked!==false;
+      if(!nombreProd)return alert('Escribe el nombre del producto.');
+      if(cantidad<=0)return alert('Escribe la cantidad.');
+      if(precio<0)return alert('Escribe el precio.');
+      let prod={id:null,nombre:nombreProd,unidad,precio,tienda_preferida:tienda,categoria:categoria_texto};
+      if(guardar)prod=await insertarProductoCantidadCero({nombre:nombreProd,categoria_id,categoria_texto,unidad,precio,tienda});
+      await insertarCarritoSeguro(prod,{nombre:nombreProd,cantidad,unidad,precio,tienda,categoria:categoria_texto});
+      try{if(typeof cargarTodo==='function')await cargarTodo();}catch(e){}
+      await cargarCarritoLimpio();
+      try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+      try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+      ['hcNuevoNombre','hcNuevoPrecio','hcNuevoTienda'].forEach(id=>{const el=document.getElementById(id); if(el)el.value='';});
+      const canti=document.getElementById('hcNuevoCantidad'); if(canti)canti.value='1';
+      alert('Producto agregado al carrito una sola vez. Inventario queda en 0 hasta confirmar compra.');
+    }catch(e){alert('No se pudo agregar producto nuevo: '+(e.message||e));}
+  };
+
+  window.agregarRapidoCarrito=async function(id){
+    try{
+      const p=getProductos().find(x=>String(x.id)===String(id));
+      if(!p)return alert('No encontré el producto.');
+      const cantidad=typeof cantidadSugeridaProducto==='function'?cantidadSugeridaProducto(p):1;
+      await insertarCarritoSeguro(p,{nombre:p.nombre,cantidad,unidad:p.unidad||'',precio:num(p.precio),tienda:p.tienda_preferida||'Sin tienda',categoria:p.categoria||'',nota:''});
+      try{delete pospuestos[p.id]; guardarPospuestos();}catch(e){}
+      try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    }catch(e){alert('No se pudo agregar al carrito: '+(e.message||e));}
+  };
+
+  window.agregarAlCarrito=async function(){
+    try{
+      const id=(document.getElementById('productoCarrito')||window.productoCarrito)?.value;
+      const p=getProductos().find(x=>String(x.id)===String(id));
+      if(!p)return alert('Selecciona producto');
+      let cantidad=num((document.getElementById('cantidadCarrito')||window.cantidadCarrito)?.value)||1;
+      let precio=num((document.getElementById('precioCarrito')||window.precioCarrito)?.value)||num(p.precio);
+      let nota='';
+      const tipo=document.getElementById('tipoPrecioCarrito')?.value||'normal';
+      if(tipo==='kg'){
+        const precioKg=num(document.getElementById('precioKiloCarrito')?.value);
+        const gramos=num(document.getElementById('gramosCarrito')?.value);
+        if(precioKg<=0||gramos<=0)return alert('Pon precio por kilo y gramos comprados.');
+        cantidad=gramos/1000; precio=precioKg; nota=`Granel: ${gramos} g`;
+      }
+      const tienda=(document.getElementById('tiendaCarrito')?.value||p.tienda_preferida||'Sin tienda').trim()||'Sin tienda';
+      await insertarCarritoSeguro(p,{nombre:p.nombre,cantidad,unidad:p.unidad||'',precio,tienda,categoria:p.categoria||'',nota});
+      try{delete pospuestos[p.id]; guardarPospuestos();}catch(e){}
+      try{cantidadCarrito.value=''; precioCarrito.value=''; tiendaCarrito.value='';}catch(e){}
+      try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    }catch(e){alert('No se pudo agregar al carrito: '+(e.message||e));}
+  };
+
+  async function marcarComprado(it){
+    const id=rowId(it); if(!id)return;
+    await desactivarIds([id],'comprado');
+  }
+
+  async function guardarCompraYSumar(it,cantidad,precio,tienda){
+    const c=cli(); if(!c)throw new Error('No hay conexión con Supabase.');
+    const prod=await productoActual(it);
+    if(!prod || !isUuid(prod.id))throw new Error('No encontré el producto de inventario para '+nombre(it));
+    if(!(precio>0))precio=num(prod.precio);
+    const total=cantidad*precio;
+    const compra={producto_id:prod.id,producto:prod.nombre||nombre(it),tienda:tienda||it.tienda||prod.tienda_preferida||'Sin tienda',cantidad,precio,total,fecha:hoy(),usuario:user()};
+    const r1=await c.from(TAB_COMPRAS).insert(compra);
+    if(r1.error)throw r1.error;
+    const actual=await c.from(TAB_PRODUCTOS).select('cantidad').eq('id',prod.id).maybeSingle();
+    const cantidadActual=!actual.error && actual.data ? num(actual.data.cantidad) : num(prod.cantidad);
+    const r2=await c.from(TAB_PRODUCTOS).update({cantidad:cantidadActual+cantidad,precio,tienda_preferida:compra.tienda,actualizado:new Date().toISOString()}).eq('id',prod.id);
+    if(r2.error)throw r2.error;
+    try{if(typeof hcRegistrarHistorialPrecio==='function')await hcRegistrarHistorialPrecio({...it,producto_id:prod.id,cantidad,precio,total,tienda:compra.tienda},prod);}catch(e){}
+    return {...compra,inventario_anterior:cantidadActual,inventario_nuevo:cantidadActual+cantidad};
+  }
+
+  async function refrescar(){
+    setCart([]);
+    try{if(typeof cargarTodo==='function')await cargarTodo();}catch(e){}
+    await cargarCarritoLimpio();
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+  }
+
+  window.confirmarProductoCarrito=async function(id){
+    if(guardando)return alert('Estoy guardando la compra anterior, espera un momento.');
+    const c=cli(); if(!c)return alert('No hay conexión con Supabase.');
+    guardando=true;
+    try{
+      const lista=await cargarCarritoLimpio();
+      const item=lista.find(x=>String(x.tmp)===String(id)||String(x.cloud_id)===String(id)||String(x.id)===String(id));
+      if(!item)return alert('Ese producto ya no está pendiente en el carrito.');
+      const cantidadTxt=prompt(`Cantidad comprada de ${nombre(item)}:`,String(num(item.cantidad)||1));
+      if(cantidadTxt===null)return;
+      const cantidad=num(cantidadTxt); if(cantidad<=0)return alert('Cantidad inválida.');
+      const prod=await productoActual(item);
+      const precioSugerido=num(item.precio||item.precio_estimado)||num(prod?.precio);
+      const precioTxt=prompt(`Precio unitario pagado de ${nombre(item)}:`,String(precioSugerido));
+      if(precioTxt===null)return;
+      const precio=num(precioTxt); if(precio<0)return alert('Precio inválido.');
+      const tiendaTxt=prompt('Tienda donde lo compraste:',item.tienda||prod?.tienda_preferida||'Sin tienda');
+      if(tiendaTxt===null)return;
+      const tienda=String(tiendaTxt||item.tienda||'Sin tienda').trim()||'Sin tienda';
+      if(!confirm(`¿Confirmar este producto?\n\n${nombre(item)}\nCantidad: ${cantidad}\nPrecio: $${mon(precio)}\nTotal: $${mon(cantidad*precio)}\n\nSe sumará al inventario y saldrá del carrito.`))return;
+      const compra=await guardarCompraYSumar(item,cantidad,precio,tienda);
+      await marcarComprado(item);
+      // Cualquier duplicado del mismo producto se apaga sin volver a sumarlo.
+      const dupIds=lista.filter(x=>keyItem(x)===keyItem(item)&&rowId(x)!==rowId(item)).map(rowId).filter(Boolean);
+      if(dupIds.length)await desactivarIds(dupIds,'duplicado');
+      try{if(typeof auditar==='function')await auditar('confirmar_producto_carrito',nombre(item),compra);}catch(e){}
+      await refrescar();
+      alert('Producto confirmado y quitado del carrito.');
+    }catch(e){alert(e.message||e)}
+    finally{guardando=false;}
+  };
+
+  window.confirmarCarrito=async function(){
+    if(guardando)return alert('Estoy guardando la compra anterior, espera un momento.');
+    const c=cli(); if(!c)return alert('No hay conexión con Supabase.');
+    guardando=true;
+    try{
+      const lista=await cargarCarritoLimpio();
+      if(!lista.length)return alert('El carrito está vacío');
+      if(!confirm(`¿Confirmar compra completa?\n\nSe procesará una sola vez cada producto pendiente (${lista.length}).`))return;
+      const hechos=[];
+      const procesados=new Set();
+      for(const item of lista){
+        const k=keyItem(item);
+        if(procesados.has(k)){await marcarComprado(item); continue;}
+        procesados.add(k);
+        const prod=await productoActual(item);
+        const cantidad=num(item.cantidad)||1;
+        const precio=num(item.precio||item.precio_estimado)||num(prod?.precio);
+        const tienda=item.tienda||prod?.tienda_preferida||'Sin tienda';
+        hechos.push(await guardarCompraYSumar(item,cantidad,precio,tienda));
+        await marcarComprado(item);
+      }
+      try{if(typeof auditar==='function')await auditar('confirmar_carrito',`${hechos.length} productos`,{carrito:hechos});}catch(e){}
+      await refrescar();
+      alert('Compra confirmada. Los productos quedaron fuera del carrito en Supabase.');
+    }catch(e){alert(e.message||e)}
+    finally{guardando=false;}
+  };
+
+  window.quitarCarrito=async function(id){
+    try{
+      const lista=await cargarCarritoLimpio();
+      const item=lista.find(x=>String(x.tmp)===String(id)||String(x.cloud_id)===String(id)||String(x.id)===String(id));
+      if(item)await desactivarIds([rowId(item)],'quitado');
+      await cargarCarritoLimpio();
+      try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    }catch(e){alert('No se pudo quitar del carrito: '+(e.message||e));}
+  };
+
+  window.vaciarCarrito=async function(){
+    if(!confirm('¿Vaciar carrito?'))return;
+    try{
+      const lista=await cargarCarritoLimpio();
+      await desactivarIds(lista.map(rowId).filter(Boolean),'quitado');
+      setCart([]);
+      try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    }catch(e){alert('No se pudo vaciar carrito: '+(e.message||e));}
+  };
+
+  // Reemplazar cargadores viejos por el cargador limpio.
+  window.cargarCarritoSupabase=cargarCarritoLimpio;
+  window.cargarCarritoOnline=cargarCarritoLimpio;
+  window.hc133CargarCarritoOnline=cargarCarritoLimpio;
+
+  // Antes de pintar, limpiar duplicados locales para que no se vean dos veces.
+  const oldMostrar=window.mostrarCarrito;
+  if(typeof oldMostrar==='function' && !oldMostrar.__hc149){
+    window.mostrarCarrito=function(){
+      const d=dedupeLocal(getCart());
+      if(d.duplicados.length)setCart(d.out);
+      return oldMostrar.apply(this,arguments);
+    };
+    window.mostrarCarrito.__hc149=true;
+    try{mostrarCarrito=window.mostrarCarrito;}catch(e){}
+  }
+
+  window.addEventListener('load',()=>setTimeout(()=>cargarCarritoLimpio().then(()=>{try{mostrarCarrito();}catch(e){}}).catch(()=>{}),1200));
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')setTimeout(()=>cargarCarritoLimpio().then(()=>{try{mostrarCarrito();}catch(e){}}).catch(()=>{}),500)});
+})();
+</script>
+
+<style id="hc1410-menu-tabs-css">
+/* HC 14.10 - Menú de tres puntos con pestañas: Menú / Configuración */
+#hc1378MenuPanel.hc1410-menu-panel{
+  width:min(94vw,980px)!important;
+  max-height:88vh!important;
+  overflow:auto!important;
+  padding:16px!important;
+  border-radius:28px!important;
+}
+#hc1378MenuPanel .hc1410-tabs{
+  display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 14px;
+}
+#hc1378MenuPanel .hc1410-tab{
+  border:0!important;border-radius:20px!important;min-height:58px!important;color:white!important;font-weight:1000!important;font-size:18px!important;
+  background:linear-gradient(135deg,#334155,#0f172a)!important;box-shadow:0 12px 28px rgba(0,0,0,.18)!important;
+}
+#hc1378MenuPanel .hc1410-tab.active{background:linear-gradient(135deg,#2563eb,#06b6d4)!important;outline:3px solid rgba(34,211,238,.35)!important;}
+#hc1378MenuPanel .hc1410-pane{display:none!important;}
+#hc1378MenuPanel .hc1410-pane.active{display:block!important;}
+#hc1378MenuPanel .hc1410-menu-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
+#hc1378MenuPanel .hc1410-nav{
+  position:relative;overflow:hidden;border:0!important;border-radius:24px!important;min-height:78px!important;padding:18px 14px!important;color:white!important;
+  font-size:21px!important;font-weight:1000!important;text-align:center!important;box-shadow:0 16px 34px rgba(15,23,42,.22)!important;
+}
+#hc1378MenuPanel .hc1410-nav:before{content:"";position:absolute;left:24px;top:-30px;width:125px;height:125px;border-radius:50%;background:rgba(255,255,255,.16);pointer-events:none;}
+#hc1378MenuPanel .hc1410-nav span{position:relative;z-index:1;}
+#hc1378MenuPanel .hc1410-blue{background:linear-gradient(135deg,#2563eb,#06b6d4)!important;}
+#hc1378MenuPanel .hc1410-pink{background:linear-gradient(135deg,#9333ea,#ec4899)!important;}
+#hc1378MenuPanel .hc1410-orange{background:linear-gradient(135deg,#f97316,#ef4444)!important;}
+#hc1378MenuPanel .hc1410-green{background:linear-gradient(135deg,#10b981,#14b8a6)!important;}
+#hc1378MenuPanel .hc1410-red{background:linear-gradient(135deg,#fb923c,#ef4444)!important;}
+#hc1378MenuPanel .hc1410-gray{background:linear-gradient(135deg,#64748b,#1e293b)!important;}
+#hc1378MenuPanel .hc1410-config-head{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:center;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid rgba(148,163,184,.22);}
+#hc1378MenuPanel .hc1410-avatar{width:58px;height:58px;border-radius:20px;display:grid;place-items:center;font-size:32px;background:linear-gradient(135deg,#14b8a6,#3b82f6);overflow:hidden;color:white;font-weight:1000;}
+#hc1378MenuPanel .hc1410-avatar img{width:100%;height:100%;object-fit:cover;display:block;}
+#hc1378MenuPanel .hc1410-user{font-size:22px;font-weight:1000;color:#f8fafc;line-height:1.1;}
+body:not(.dark) #hc1378MenuPanel .hc1410-user{color:#0f172a;}
+#hc1378MenuPanel .hc1410-role{font-size:13px;color:#cbd5e1;font-weight:800;}
+body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
+#hc1378MenuPanel .hc1410-profile-tools{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:10px 0 14px;}
+#hc1378MenuPanel .hc1410-profile-tools button,#hc1378MenuPanel .hc1410-profile-tools label{
+  border:0!important;border-radius:18px!important;min-height:48px!important;padding:10px!important;color:white!important;font-weight:1000!important;text-align:center!important;background:linear-gradient(135deg,#14b8a6,#2563eb)!important;cursor:pointer;
+}
+#hc1378MenuPanel .hc1410-profile-tools input[type=file]{display:none!important;}
+#hc1378MenuPanel .hc1410-status{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;}
+#hc1378MenuPanel .hc1410-pill{border:1px solid rgba(148,163,184,.24);border-radius:24px;padding:12px;background:rgba(15,23,42,.16);font-weight:900;}
+#hc1378MenuPanel .hc1410-pill b{display:block;font-size:18px;margin-top:4px;color:inherit;}
+#hc1378MenuPanel .hc1410-actions{display:grid;gap:9px;}
+#hc1378MenuPanel .hc1410-action{width:100%!important;margin:0!important;border:0!important;border-radius:20px!important;min-height:58px!important;padding:12px 14px!important;display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:12px!important;color:white!important;font-size:16px!important;font-weight:950!important;box-shadow:0 14px 26px rgba(15,23,42,.16)!important}
+#hc1378MenuPanel .hc1410-action span:first-child{font-size:25px;width:30px;text-align:center;}
+@media(max-width:620px){
+  #hc1378MenuPanel.hc1410-menu-panel{width:96vw!important;right:2vw!important;left:auto!important;}
+  #hc1378MenuPanel .hc1410-menu-grid{grid-template-columns:1fr 1fr;gap:10px;}
+  #hc1378MenuPanel .hc1410-nav{min-height:70px!important;font-size:18px!important;padding:14px 10px!important;}
+  #hc1378MenuPanel .hc1410-profile-tools{grid-template-columns:1fr;}
+}
+</style>
+<script id="hc1410-menu-tabs-js">
+/* HC 14.10 - Reemplaza el panel de tres puntos por Menú / Configuración */
+(function(){
+  if(window.HC1410_MENU_TABS)return; window.HC1410_MENU_TABS=true;
+  const $=id=>document.getElementById(id);
+  function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+  function ses(){try{if(window.sesion)return window.sesion}catch(e){} try{return JSON.parse(localStorage.getItem('despensaSesion')||'{}')||{}}catch(e){return {}}}
+  function avatarHTML(){
+    const tipo=localStorage.getItem('hc1410AvatarTipo')||'emoji';
+    const val=localStorage.getItem('hc1410AvatarValor')||'👤';
+    if(tipo==='foto' && val) return `<img src="${esc(val)}" alt="avatar">`;
+    return esc(val||'👤');
+  }
+  function ir(panel){
+    try{ if(typeof window.ver==='function') window.ver(panel); else if(typeof window.mostrarPanel==='function') window.mostrarPanel(panel); }
+    catch(e){ console.warn('No pude abrir panel',panel,e); }
+    hc1378CloseMenu && hc1378CloseMenu();
+  }
+  window.hc1410Ir=ir;
+  window.hc1410Tab=function(tab){
+    document.querySelectorAll('#hc1378MenuPanel .hc1410-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+    document.querySelectorAll('#hc1378MenuPanel .hc1410-pane').forEach(p=>p.classList.toggle('active',p.dataset.pane===tab));
+    localStorage.setItem('hc1410MenuTab',tab);
+  };
+  window.hc1410CambiarEmoji=function(){
+    const actual=localStorage.getItem('hc1410AvatarValor')||'👤';
+    const e=prompt('Escribe el emoji que quieres usar en tu perfil:', actual);
+    if(!e)return;
+    localStorage.setItem('hc1410AvatarTipo','emoji');
+    localStorage.setItem('hc1410AvatarValor',e.trim().slice(0,4)||'👤');
+    hc1378OpenMenu(); hc1410Tab('config');
+  };
+  window.hc1410QuitarAvatar=function(){
+    localStorage.setItem('hc1410AvatarTipo','emoji');
+    localStorage.setItem('hc1410AvatarValor','👤');
+    hc1378OpenMenu(); hc1410Tab('config');
+  };
+  window.hc1410Foto=function(input){
+    const f=input.files&&input.files[0]; if(!f)return;
+    const r=new FileReader();
+    r.onload=function(){localStorage.setItem('hc1410AvatarTipo','foto');localStorage.setItem('hc1410AvatarValor',r.result);hc1378OpenMenu();hc1410Tab('config');};
+    r.readAsDataURL(f);
+  };
+  function configHTML(){
+    const s=ses();
+    const nombre=(s.nombre||s.usuario||$('usuarioActivo')?.textContent||'Usuario').trim();
+    const rol=(s.rol||'sesión').toString();
+    const dark=document.body.classList.contains('dark');
+    const online=(window.db)||((localStorage.getItem('despensaSupabaseUrl')||'')&&(localStorage.getItem('despensaSupabaseKey')||''));
+    return `<div class="hc1410-config-head"><div class="hc1410-avatar">${avatarHTML()}</div><div><div class="hc1410-user">${esc(nombre)}</div><div class="hc1410-role">${esc(rol)} · HomeControl</div></div></div>
+      <div class="hc1410-profile-tools">
+        <button type="button" onclick="hc1410CambiarEmoji()">😀 Cambiar emoji</button>
+        <label>📷 Usar mi foto<input type="file" accept="image/*" onchange="hc1410Foto(this)"></label>
+        <button type="button" onclick="hc1410QuitarAvatar()">↩️ Quitar foto/emoji</button>
+      </div>
+      <div class="hc1410-status"><div class="hc1410-pill">☁️ Supabase<b>${online?'En línea':'Sin conectar'}</b></div><div class="hc1410-pill">🎨 Modo<b>${dark?'Dark':'Light'}</b></div></div>
+      <div class="hc1378-themes"><button type="button" class="hc1378-theme t-verde" onclick="hc1378SetTheme('verde')"></button><button type="button" class="hc1378-theme t-azul" onclick="hc1378SetTheme('azul')"></button><button type="button" class="hc1378-theme t-naranja" onclick="hc1378SetTheme('naranja')"></button><button type="button" class="hc1378-theme t-cyber" onclick="hc1378SetTheme('cyber')"></button></div>
+      <div class="hc1410-actions">
+        <button type="button" class="hc1410-action ${dark?'a-light':'a-dark'}" onclick="hc1378ToggleDark()"><span>${dark?'☀️':'🌙'}</span><span>${dark?'Cambiar a modo claro':'Cambiar a modo dark'}</span></button>
+        <button type="button" class="hc1410-action a-green" onclick="hc1378SupabaseStatus()"><span>☁️</span><span>Estado de Supabase</span></button>
+        <button type="button" class="hc1410-action a-blue" onclick="hc1378OpenConfig()"><span>⚙️</span><span>Cambiar conexión</span></button>
+        <button type="button" class="hc1410-action a-gray" onclick="hc1378About()"><span>ℹ️</span><span>Acerca de HomeControl</span></button>
+        <button type="button" class="hc1410-action a-red" onclick="hc1378Logoff()"><span>🚪</span><span>Cerrar sesión</span></button>
+      </div>`;
+  }
+  function menuHTML(){
+    return `<div class="hc1410-menu-grid">
+      <button type="button" class="hc1410-nav hc1410-blue" onclick="hc1410Ir('asistente')"><span>🤖 Inicio</span></button>
+      <button type="button" class="hc1410-nav hc1410-blue" onclick="hc1410Ir('inventario')"><span>📦 Inventario</span></button>
+      <button type="button" class="hc1410-nav hc1410-pink" onclick="hc1410Ir('carrito')"><span>🛒 Carrito</span></button>
+      <button type="button" class="hc1410-nav hc1410-orange" onclick="hc1410Ir('consumo')"><span>🍽️ Consumo</span></button>
+      <button type="button" class="hc1410-nav hc1410-blue" onclick="hc1410Ir('reportes')"><span>📊 Reportes</span></button>
+      <button type="button" class="hc1410-nav hc1410-green" onclick="hc1410Ir('presupuesto')"><span>💵 Presupuesto</span></button>
+      <button type="button" class="hc1410-nav hc1410-pink" onclick="hc1410Ir('gastos')"><span>💰 Gastos</span></button>
+      <button type="button" class="hc1410-nav hc1410-red" onclick="hc1410Ir('inteligencia')"><span>🧠 Inteligencia</span></button>
+      <button type="button" class="hc1410-nav hc1410-gray" onclick="hc1410Ir('herramientas')"><span>🧰 Herramientas</span></button>
+      <button type="button" class="hc1410-nav hc1410-gray" onclick="hc1410Ir('admin')"><span>⚙️ Admin</span></button>
+      <button type="button" class="hc1410-nav hc1410-blue" onclick="hc1410Ir('diagnostico')"><span>🧪 Diagnóstico</span></button>
+    </div>`;
+  }
+  function fullHTML(){
+    const tab=localStorage.getItem('hc1410MenuTab')||'menu';
+    return `<div class="hc1410-tabs"><button type="button" class="hc1410-tab ${tab==='menu'?'active':''}" data-tab="menu" onclick="hc1410Tab('menu')">🚀 Menú</button><button type="button" class="hc1410-tab ${tab==='config'?'active':''}" data-tab="config" onclick="hc1410Tab('config')">⚙️ Configuración</button></div>
+      <div class="hc1410-pane ${tab==='menu'?'active':''}" data-pane="menu">${menuHTML()}</div>
+      <div class="hc1410-pane ${tab==='config'?'active':''}" data-pane="config">${configHTML()}</div>`;
+  }
+  function ensureButton(){
+    let btn=$('hc1378RealMenuBtn');
+    if(!btn){btn=document.createElement('button');btn.id='hc1378RealMenuBtn';btn.type='button';btn.textContent='⋮';btn.setAttribute('aria-label','Abrir menú HomeControl');document.body.appendChild(btn);}
+    btn.onclick=function(ev){ev.preventDefault();ev.stopPropagation();window.hc1378OpenMenu();};
+  }
+  function ensurePanel(){
+    let back=$('hc1378MenuBackdrop'); if(!back){back=document.createElement('div');back.id='hc1378MenuBackdrop';back.className='oculto';document.body.appendChild(back);}
+    back.onclick=()=>window.hc1378CloseMenu();
+    let p=$('hc1378MenuPanel'); if(!p){p=document.createElement('div');p.id='hc1378MenuPanel';p.className='oculto';document.body.appendChild(p);}
+    p.classList.add('hc1410-menu-panel');
+    p.innerHTML=fullHTML();
+  }
+  const oldSetTheme=window.hc1378SetTheme;
+  const oldToggle=window.hc1378ToggleDark;
+  window.hc1378OpenMenu=function(){ensureButton();ensurePanel();$('hc1378MenuPanel').classList.remove('oculto');$('hc1378MenuBackdrop').classList.remove('oculto');};
+  window.hc1378CloseMenu=function(){ $('hc1378MenuPanel')?.classList.add('oculto'); $('hc1378MenuBackdrop')?.classList.add('oculto'); };
+  window.hc1378SetTheme=function(t){ if(typeof oldSetTheme==='function') oldSetTheme(t); else {document.body.classList.remove('hc1378-theme-verde','hc1378-theme-azul','hc1378-theme-naranja','hc1378-theme-cyber');document.body.classList.add('hc1378-theme-'+(t||'verde'));localStorage.setItem('hc1378Tema',t||'verde');} window.hc1378OpenMenu(); hc1410Tab('config'); };
+  window.hc1378ToggleDark=function(){ if(typeof oldToggle==='function') oldToggle(); else {document.body.classList.toggle('dark');localStorage.setItem('darkDespensa',document.body.classList.contains('dark'));} window.hc1378OpenMenu(); hc1410Tab('config'); };
+  function init(){ensureButton();ensurePanel();}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init); else init();
+  window.addEventListener('load',()=>setTimeout(init,250));
+})();
+</script>
+
+<script id="hc1411-carrito-refresh-final">
+/* HC 14.11 - Carrito estable y refresco inmediato
+   Cambios puntuales:
+   1) X elimina de Supabase todos los duplicados del mismo producto/nombre y refresca pantalla.
+   2) Confirmar compra completa procesa una sola vez por producto aunque existan duplicados activos.
+   3) Después de cualquier botón del carrito se recarga desde Supabase y se actualiza el fichero flotante.
+*/
+(function(){
+  if(window.HC1411_CARRITO_REFRESH_FINAL)return; window.HC1411_CARRITO_REFRESH_FINAL=true;
+
+  const TAB_CARRITO='home_carrito_compartido';
+  const TAB_PRODUCTOS='despensa_productos';
+  const TAB_COMPRAS='despensa_compras';
+  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+  let ocupado=false;
+
+  function cli(){try{if(typeof db!=='undefined'&&db)return db;}catch(e){} return window.db||null;}
+  function isUuid(v){return UUID.test(String(v||''));}
+  function num(v){return Number(String(v??0).replace(',','.'))||0;}
+  function money2(v){try{return typeof money==='function'?money(v):num(v).toFixed(2)}catch(e){return num(v).toFixed(2)}}
+  function hoy(){try{return typeof hoyISO==='function'?hoyISO():new Date().toISOString().slice(0,10)}catch(e){return new Date().toISOString().slice(0,10)}}
+  function norm(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();}
+  function nombre(it){return String(it?.nombre||it?.producto||'Producto').trim()||'Producto';}
+  function rowId(it){return [it?.cloud_id,it?.id,it?.tmp].find(isUuid)||null;}
+  function prodId(it){return isUuid(it?.producto_id)?String(it.producto_id):null;}
+  function key(it){return prodId(it) || ('nombre:'+norm(nombre(it)));}
+  function userName(){return window.sesion?.usuario||window.sesion?.nombre||'Jesus Vazquez';}
+  function getCart(){try{if(Array.isArray(window.carrito))return window.carrito;}catch(e){} try{if(Array.isArray(carrito))return carrito;}catch(e){} return []}
+  function setCart(a){a=Array.isArray(a)?a:[];try{window.carrito=a;}catch(e){} try{carrito=a;}catch(e){} try{carritoActual=a;}catch(e){} try{itemsCarrito=a;}catch(e){} try{localStorage.removeItem('despensaCarrito');}catch(e){}}
+  function getProductos(){try{if(Array.isArray(window.productos))return window.productos}catch(e){} try{if(Array.isArray(productos))return productos}catch(e){} return []}
+
+  function itemDesdeFila(r){
+    const cantidad=num(r.cantidad)||1;
+    const precio=num(r.precio_aplicado||r.precio_estimado||r.precio_normal||0);
+    return {
+      tmp:r.id, id:r.id, cloud_id:r.id,
+      producto_id:r.producto_id||null,
+      nombre:r.nombre||'Producto', producto:r.nombre||'Producto',
+      categoria:r.categoria||'', cantidad, unidad:r.unidad||'', tienda:r.tienda||'Sin tienda',
+      precio, precio_estimado:precio, total:cantidad*precio,
+      motivo:r.motivo||'', nota:r.motivo||'', estado:r.estado||'pendiente', activo:r.activo!==false,
+      created_at:r.created_at||''
+    };
+  }
+
+  function elegirMejor(lista){
+    // Si hay dos filas iguales, conserva la que tenga precio real; si no, la primera.
+    return lista.slice().sort((a,b)=>{
+      const ap=num(a.precio||a.precio_estimado), bp=num(b.precio||b.precio_estimado);
+      if((bp>0)!==(ap>0)) return (bp>0)-(ap>0);
+      return String(a.created_at||'').localeCompare(String(b.created_at||''));
+    })[0];
+  }
+
+  function dedupe(arr){
+    const grupos=new Map();
+    (arr||[]).forEach(it=>{const k=key(it); if(!grupos.has(k))grupos.set(k,[]); grupos.get(k).push(it);});
+    const buenos=[], duplicados=[];
+    grupos.forEach(g=>{
+      const keep=elegirMejor(g);
+      buenos.push(keep);
+      g.forEach(x=>{if(rowId(x)!==rowId(keep))duplicados.push(x);});
+    });
+    return {buenos,duplicados};
+  }
+
+  async function setEstado(ids,estado){
+    const c=cli(); if(!c)return;
+    ids=[...new Set((ids||[]).filter(isUuid))];
+    if(!ids.length)return;
+    try{
+      const r=await c.from(TAB_CARRITO).update({activo:false,estado}).in('id',ids);
+      if(r.error)console.warn('Carrito: no pude cambiar estado',r.error.message||r.error);
+    }catch(e){console.warn('Carrito: no pude cambiar estado',e);}
+  }
+
+  async function leerCarritoNube(){
+    const c=cli(); if(!c){setCart([]); return []}
+    const r=await c.from(TAB_CARRITO).select('*').eq('activo',true).eq('estado','pendiente').order('created_at',{ascending:true});
+    if(r.error)throw r.error;
+    const arr=(r.data||[]).map(itemDesdeFila);
+    const d=dedupe(arr);
+    if(d.duplicados.length) await setEstado(d.duplicados.map(rowId),'duplicado');
+    setCart(d.buenos);
+    return d.buenos;
+  }
+
+  function actualizarFichero(){
+    const arr=getCart();
+    const total=arr.reduce((s,x)=>s+(num(x.total)||num(x.cantidad)*num(x.precio||x.precio_estimado)),0);
+    try{if(window.quickCartCount)quickCartCount.textContent=arr.length;}catch(e){}
+    try{if(window.quickCartTotal)quickCartTotal.textContent=money2(total);}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+  }
+
+  async function refrescarCarrito(){
+    try{await leerCarritoNube();}catch(e){console.warn('No pude recargar carrito',e);}
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    actualizarFichero();
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+  }
+  window.hc1411RefrescarCarrito=refrescarCarrito;
+
+  async function productoActual(it){
+    const c=cli(); if(!c)return null;
+    const pid=prodId(it);
+    if(pid){
+      const r=await c.from(TAB_PRODUCTOS).select('*').eq('id',pid).maybeSingle();
+      if(!r.error && r.data)return r.data;
+    }
+    const local=getProductos().find(p=>norm(p.nombre)===norm(nombre(it)));
+    if(local)return local;
+    const r=await c.from(TAB_PRODUCTOS).select('*').limit(500);
+    if(!r.error && r.data)return (r.data||[]).find(p=>norm(p.nombre)===norm(nombre(it)))||null;
+    return null;
+  }
+
+  async function guardarCompraYSumarUnaVez(it,cantidad,precio,tienda){
+    const c=cli(); if(!c)throw new Error('No hay conexión con Supabase.');
+    const prod=await productoActual(it);
+    if(!prod || !isUuid(prod.id))throw new Error('No encontré el producto de inventario para '+nombre(it));
+    const precioFinal=precio>0?precio:num(prod.precio);
+    const total=cantidad*precioFinal;
+    const compra={
+      producto_id:prod.id,
+      producto:prod.nombre||nombre(it),
+      tienda:tienda||it.tienda||prod.tienda_preferida||'Sin tienda',
+      cantidad,
+      precio:precioFinal,
+      total,
+      fecha:hoy(),
+      usuario:userName()
+    };
+    const ins=await c.from(TAB_COMPRAS).insert(compra);
+    if(ins.error)throw ins.error;
+    const actual=num(prod.cantidad);
+    const upd=await c.from(TAB_PRODUCTOS).update({
+      cantidad:actual+cantidad,
+      precio:precioFinal,
+      tienda_preferida:compra.tienda,
+      actualizado:new Date().toISOString()
+    }).eq('id',prod.id);
+    if(upd.error)throw upd.error;
+    return {...compra,inventario_anterior:actual,inventario_nuevo:actual+cantidad};
+  }
+
+  async function idsMismoProducto(it){
+    const c=cli(); if(!c)return [];
+    const k=key(it), nm=norm(nombre(it));
+    const r=await c.from(TAB_CARRITO).select('*').eq('activo',true).eq('estado','pendiente').limit(500);
+    if(r.error)return [rowId(it)].filter(Boolean);
+    return (r.data||[]).map(itemDesdeFila).filter(x=>key(x)===k || norm(nombre(x))===nm).map(rowId).filter(Boolean);
+  }
+
+  window.quitarCarrito=async function(id){
+    if(ocupado)return alert('Estoy actualizando el carrito, espera un momento.');
+    ocupado=true;
+    try{
+      const lista=await leerCarritoNube();
+      const item=lista.find(x=>String(x.tmp)===String(id)||String(x.cloud_id)===String(id)||String(x.id)===String(id));
+      if(!item){await refrescarCarrito(); return;}
+      const ids=await idsMismoProducto(item);
+      await setEstado(ids,'quitado');
+      setCart(getCart().filter(x=>key(x)!==key(item) && norm(nombre(x))!==norm(nombre(item))));
+      await refrescarCarrito();
+    }catch(e){alert('No se pudo quitar del carrito: '+(e.message||e));}
+    finally{ocupado=false;}
+  };
+
+  window.vaciarCarrito=async function(){
+    if(ocupado)return alert('Estoy actualizando el carrito, espera un momento.');
+    if(!confirm('¿Vaciar carrito?'))return;
+    ocupado=true;
+    try{
+      const lista=await leerCarritoNube();
+      await setEstado(lista.map(rowId).filter(Boolean),'quitado');
+      setCart([]);
+      await refrescarCarrito();
+    }catch(e){alert('No se pudo vaciar carrito: '+(e.message||e));}
+    finally{ocupado=false;}
+  };
+
+  window.confirmarProductoCarrito=async function(id){
+    if(ocupado)return alert('Estoy guardando, espera un momento.');
+    ocupado=true;
+    try{
+      const lista=await leerCarritoNube();
+      const item=lista.find(x=>String(x.tmp)===String(id)||String(x.cloud_id)===String(id)||String(x.id)===String(id));
+      if(!item){await refrescarCarrito(); return alert('Ese producto ya no está pendiente en el carrito.');}
+      const cantidadTxt=prompt('Cantidad comprada de '+nombre(item)+':',String(num(item.cantidad)||1));
+      if(cantidadTxt===null){ocupado=false;return;}
+      const cantidad=num(cantidadTxt); if(cantidad<=0){ocupado=false;return alert('Cantidad inválida.');}
+      const precioTxt=prompt('Precio unitario pagado de '+nombre(item)+':',String(num(item.precio||item.precio_estimado)));
+      if(precioTxt===null){ocupado=false;return;}
+      const precio=num(precioTxt); if(precio<0){ocupado=false;return alert('Precio inválido.');}
+      const tiendaTxt=prompt('Tienda:',item.tienda||'Sin tienda');
+      if(tiendaTxt===null){ocupado=false;return;}
+      const tienda=String(tiendaTxt||item.tienda||'Sin tienda').trim()||'Sin tienda';
+      if(!confirm(`¿Confirmar este producto?\n\n${nombre(item)}\nCantidad: ${cantidad}\nTotal: $${money2(cantidad*precio)}\n\nSe sumará una sola vez y se quitará del carrito.`)){ocupado=false;return;}
+      const compra=await guardarCompraYSumarUnaVez(item,cantidad,precio,tienda);
+      const ids=await idsMismoProducto(item);
+      await setEstado(ids,'comprado');
+      try{if(typeof auditar==='function')await auditar('confirmar_producto_carrito',nombre(item),compra);}catch(e){}
+      await refrescarCarrito();
+      alert('Producto confirmado y quitado del carrito.');
+    }catch(e){alert(e.message||e);}
+    finally{ocupado=false;}
+  };
+
+  window.confirmarCarrito=async function(){
+    if(ocupado)return alert('Estoy guardando, espera un momento.');
+    const lista=await leerCarritoNube();
+    if(!lista.length)return alert('El carrito está vacío.');
+    if(!confirm(`¿Confirmar compra completa?\n\nSe guardarán ${lista.length} producto(s) únicos. Si había duplicados, no se sumarán doble.`))return;
+    ocupado=true;
+    const hechos=[];
+    try{
+      const actual=dedupe(await leerCarritoNube()).buenos;
+      for(const item of actual){
+        const compra=await guardarCompraYSumarUnaVez(item,num(item.cantidad)||1,num(item.precio||item.precio_estimado),item.tienda||'Sin tienda');
+        hechos.push(compra);
+        const ids=await idsMismoProducto(item);
+        await setEstado(ids,'comprado');
+      }
+      try{if(typeof auditar==='function')await auditar('confirmar_carrito',`${hechos.length} productos únicos`,{carrito:hechos});}catch(e){}
+      await refrescarCarrito();
+      alert('Compra confirmada. Carrito actualizado.');
+    }catch(e){alert(e.message||e);}
+    finally{ocupado=false;}
+  };
+
+  // Cargadores finales. Así no gana ningún parche viejo al refrescar.
+  window.cargarCarritoSupabase=leerCarritoNube;
+  window.cargarCarritoOnline=leerCarritoNube;
+  window.hc133CargarCarritoOnline=leerCarritoNube;
+
+  const pintarViejo=window.mostrarCarrito;
+  if(typeof pintarViejo==='function' && !pintarViejo.__hc1411){
+    window.mostrarCarrito=function(){
+      const d=dedupe(getCart());
+      if(d.duplicados.length)setCart(d.buenos);
+      const r=pintarViejo.apply(this,arguments);
+      setTimeout(actualizarFichero,0);
+      return r;
+    };
+    window.mostrarCarrito.__hc1411=true;
+    try{mostrarCarrito=window.mostrarCarrito;}catch(e){}
+  }
+
+  window.addEventListener('load',()=>setTimeout(refrescarCarrito,1500));
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')setTimeout(refrescarCarrito,500);});
+})();
+</script>
+
+<script id="hc1412-carrito-elimina-fuerte">
+/* HC 14.12 - Carrito: eliminación fuerte y limpieza de duplicados
+   Cambio puntual: cuando se presiona X o confirmar, el renglón se oculta al instante,
+   se marca comprado/quitado en Supabase y además se intenta borrar la fila para que
+   no reaparezca en otros dispositivos.
+*/
+(function(){
+  if(window.HC1412_CARRITO_ELIMINA_FUERTE)return; window.HC1412_CARRITO_ELIMINA_FUERTE=true;
+  const TAB='home_carrito_compartido';
+  const LS='hc1412_carrito_ocultos';
+  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  let busy=false;
+
+  function dbx(){try{if(typeof db!=='undefined'&&db)return db;}catch(e){} return window.db||null;}
+  function isUuid(v){return UUID.test(String(v||''));}
+  function n(v){return Number(String(v??0).replace(',','.'))||0;}
+  function clean(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();}
+  function nombre(x){return String(x?.nombre||x?.producto||'Producto').trim()||'Producto';}
+  function rowId(x){return [x?.cloud_id,x?.id,x?.tmp].find(isUuid)||null;}
+  function prodId(x){return isUuid(x?.producto_id)?String(x.producto_id):null;}
+  function clave(x){return prodId(x)||('nombre:'+clean(nombre(x))+'|tienda:'+clean(x?.tienda||''));}
+  function ocultos(){try{return JSON.parse(localStorage.getItem(LS)||'[]').filter(Boolean)}catch(e){return []}}
+  function guardarOcultos(a){try{localStorage.setItem(LS,JSON.stringify([...new Set(a||[])].slice(-300)))}catch(e){}}
+  function ocultarIds(ids){ids=(ids||[]).filter(Boolean); if(!ids.length)return; guardarOcultos(ocultos().concat(ids));}
+  function estaOculto(x){const ids=ocultos(); const id=rowId(x); return id&&ids.includes(id);}
+  function arr(){try{if(Array.isArray(window.carrito))return window.carrito}catch(e){} try{if(Array.isArray(carrito))return carrito}catch(e){} return []}
+  function setArr(a){a=(Array.isArray(a)?a:[]).filter(x=>!estaOculto(x)); try{window.carrito=a}catch(e){} try{carrito=a}catch(e){} try{carritoActual=a}catch(e){} try{itemsCarrito=a}catch(e){} try{localStorage.removeItem('despensaCarrito')}catch(e){} }
+  function itemFila(r){const cantidad=n(r.cantidad)||1; const precio=n(r.precio_aplicado||r.precio_estimado||r.precio_normal||0); return {tmp:r.id,id:r.id,cloud_id:r.id,producto_id:r.producto_id||null,nombre:r.nombre||'Producto',producto:r.nombre||'Producto',categoria:r.categoria||'',cantidad,unidad:r.unidad||'',tienda:r.tienda||'Sin tienda',precio,precio_estimado:precio,total:cantidad*precio,estado:r.estado||'pendiente',activo:r.activo!==false,created_at:r.created_at||''};}
+  function dedupe(lista){
+    const grupos=new Map(), keep=[], dup=[];
+    (lista||[]).filter(x=>!estaOculto(x)).forEach(x=>{const k=clave(x); if(!grupos.has(k))grupos.set(k,[]); grupos.get(k).push(x);});
+    grupos.forEach(g=>{
+      g.sort((a,b)=>{const ap=n(a.precio||a.precio_estimado),bp=n(b.precio||b.precio_estimado); if((bp>0)!==(ap>0))return (bp>0)-(ap>0); return String(a.created_at||'').localeCompare(String(b.created_at||''));});
+      keep.push(g[0]); dup.push(...g.slice(1));
+    });
+    return {keep,dup};
+  }
+  async function filasActivas(){
+    const c=dbx(); if(!c)return [];
+    const r=await c.from(TAB).select('*').eq('activo',true).eq('estado','pendiente').order('created_at',{ascending:true});
+    if(r.error)throw r.error;
+    return (r.data||[]).map(itemFila).filter(x=>!estaOculto(x));
+  }
+  async function apagarBorrarIds(ids,estado){
+    const c=dbx(); ids=[...new Set((ids||[]).filter(isUuid))]; if(!c||!ids.length)return;
+    ocultarIds(ids);
+    for(const id of ids){
+      try{await c.from(TAB).update({activo:false,estado:estado||'quitado'}).eq('id',id);}catch(e){}
+      try{await c.from(TAB).delete().eq('id',id);}catch(e){}
+    }
+  }
+  async function idsRelacionados(item){
+    const filas=await filasActivas();
+    const k=clave(item), nm=clean(nombre(item));
+    return filas.filter(x=>clave(x)===k || (clean(nombre(x))===nm && clean(x.tienda||'')===clean(item.tienda||''))).map(rowId).filter(Boolean);
+  }
+  async function recargar(){
+    let filas=[]; try{filas=await filasActivas();}catch(e){console.warn('Carrito: no pude leer nube',e); filas=arr();}
+    const d=dedupe(filas);
+    if(d.dup.length) await apagarBorrarIds(d.dup.map(rowId),'duplicado');
+    setArr(d.keep);
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+    return d.keep;
+  }
+  window.hc1412RecargarCarrito=recargar;
+  window.hc1411RefrescarCarrito=recargar;
+  window.cargarCarritoSupabase=async function(){const a=await recargar(); return a;};
+  window.cargarCarritoOnline=window.cargarCarritoSupabase;
+  window.hc133CargarCarritoOnline=window.cargarCarritoSupabase;
+
+  window.quitarCarrito=async function(id){
+    if(busy)return alert('Estoy actualizando el carrito, espera un momento.'); busy=true;
+    try{
+      let lista=await recargar();
+      const item=lista.find(x=>String(x.tmp)===String(id)||String(x.id)===String(id)||String(x.cloud_id)===String(id));
+      if(!item){await recargar(); return;}
+      const ids=await idsRelacionados(item);
+      setArr(arr().filter(x=>!ids.includes(rowId(x)) && clave(x)!==clave(item)));
+      try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+      await apagarBorrarIds(ids,'quitado');
+      await recargar();
+    }catch(e){alert('No se pudo quitar del carrito: '+(e.message||e));}
+    finally{busy=false;}
+  };
+
+  const oldConfirmarProducto=window.confirmarProductoCarrito;
+  window.confirmarProductoCarrito=async function(id){
+    if(busy)return alert('Estoy actualizando el carrito, espera un momento.');
+    const before=await recargar();
+    const item=before.find(x=>String(x.tmp)===String(id)||String(x.id)===String(id)||String(x.cloud_id)===String(id));
+    if(!item)return alert('Ese producto ya no está pendiente.');
+    const ids=await idsRelacionados(item);
+    if(typeof oldConfirmarProducto==='function'){
+      await oldConfirmarProducto(id);
+      await apagarBorrarIds(ids,'comprado');
+      await recargar();
+    }
+  };
+
+  const oldConfirmarCarrito=window.confirmarCarrito;
+  window.confirmarCarrito=async function(){
+    if(busy)return alert('Estoy actualizando el carrito, espera un momento.');
+    const lista=await recargar();
+    const idsAntes=lista.map(rowId).filter(Boolean);
+    if(typeof oldConfirmarCarrito==='function'){
+      await oldConfirmarCarrito();
+      await apagarBorrarIds(idsAntes,'comprado');
+      await recargar();
+    }
+  };
+
+  const oldMostrar=window.mostrarCarrito;
+  if(typeof oldMostrar==='function'&&!oldMostrar.__hc1412){
+    window.mostrarCarrito=function(){
+      const d=dedupe(arr());
+      setArr(d.keep);
+      const r=oldMostrar.apply(this,arguments);
+      setTimeout(()=>{try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}},0);
+      return r;
+    };
+    window.mostrarCarrito.__hc1412=true;
+    try{mostrarCarrito=window.mostrarCarrito;}catch(e){}
+  }
+
+  document.addEventListener('click',function(ev){
+    const b=ev.target.closest('button'); if(!b)return;
+    const t=(b.textContent||'').trim();
+    if(t==='x'||t==='×'||t.includes('✅')||/comprado|confirmar|carrito/i.test(t)) setTimeout(recargar,900);
+  },true);
+  window.addEventListener('load',()=>setTimeout(recargar,1200));
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')setTimeout(recargar,400);});
+})();
+</script>
+
+<script id="hc1413-carrito-confirmacion-limpia">
+/* HC 14.13 - Confirmación limpia del carrito
+   Este bloque reemplaza los parches anteriores de confirmar compra.
+   - No llama funciones viejas de confirmar.
+   - Lee el carrito directamente desde Supabase.
+   - Une duplicados por producto/nombre/tienda.
+   - Busca el producto en inventario por id o por nombre.
+   - Si no existe, lo crea con cantidad 0 y después suma la compra.
+   - Al terminar marca los renglones como comprado y también intenta borrarlos.
+*/
+(function(){
+  if(window.HC1413_CARRITO_CONFIRMACION_LIMPIA)return;
+  window.HC1413_CARRITO_CONFIRMACION_LIMPIA=true;
+
+  const TAB_CARRITO='home_carrito_compartido';
+  const TAB_PRODUCTOS='despensa_productos';
+  const TAB_COMPRAS='despensa_compras';
+  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  let busy=false;
+
+  function dbx(){try{if(typeof db!=='undefined'&&db)return db;}catch(e){} return window.db||null;}
+  function isUuid(v){return UUID.test(String(v||''));}
+  function n(v){return Number(String(v??0).replace(',','.'))||0;}
+  function norm(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();}
+  function fmt(v){try{return typeof money==='function'?money(v):n(v).toFixed(2)}catch(e){return n(v).toFixed(2)}}
+  function fechaHoy(){try{return typeof hoyISO==='function'?hoyISO():new Date().toISOString().slice(0,10)}catch(e){return new Date().toISOString().slice(0,10)}}
+  function usuario(){return window.sesion?.usuario||window.sesion?.nombre||'Jesus Vazquez';}
+  function nombreItem(x){return String(x?.nombre||x?.producto||'Producto').trim()||'Producto';}
+  function rowId(x){return [x?.cloud_id,x?.id,x?.tmp].find(isUuid)||null;}
+  function prodId(x){return isUuid(x?.producto_id)?String(x.producto_id):null;}
+  function clave(x){return prodId(x)||('nombre:'+norm(nombreItem(x))+'|tienda:'+norm(x?.tienda||''));}
+  function setCart(a){a=Array.isArray(a)?a:[];try{window.carrito=a}catch(e){} try{carrito=a}catch(e){} try{carritoActual=a}catch(e){} try{itemsCarrito=a}catch(e){} try{localStorage.removeItem('despensaCarrito')}catch(e){}}
+  function getProductos(){try{if(Array.isArray(window.productos))return window.productos}catch(e){} try{if(Array.isArray(productos))return productos}catch(e){} return []}
+  function setProductos(a){try{window.productos=a}catch(e){} try{productos=a}catch(e){}}
+
+  function precioUnitarioFila(r){
+    const cant=Math.max(1,n(r.cantidad)||1);
+    const estimado=n(r.precio_estimado);
+    const normal=n(r.precio_normal);
+    const aplicado=n(r.precio_aplicado);
+    const oferta=n(r.precio_oferta);
+    if(estimado>0)return estimado;
+    if(oferta>0)return oferta;
+    if(normal>0)return normal;
+    if(aplicado>0 && cant>1)return aplicado/cant;
+    return aplicado;
+  }
+  function itemDesdeFila(r){
+    const cantidad=n(r.cantidad)||1;
+    const precio=precioUnitarioFila(r);
+    return {
+      tmp:r.id,id:r.id,cloud_id:r.id,
+      producto_id:r.producto_id||null,
+      nombre:r.nombre||'Producto',producto:r.nombre||'Producto',
+      categoria:r.categoria||'',cantidad,unidad:r.unidad||'',tienda:r.tienda||'Sin tienda',
+      precio,precio_estimado:precio,total:cantidad*precio,
+      motivo:r.motivo||'',nota:r.motivo||'',estado:r.estado||'pendiente',activo:r.activo!==false,
+      created_at:r.created_at||''
+    };
+  }
+  function mejorGrupo(g){
+    return g.slice().sort((a,b)=>{
+      const ap=n(a.precio),bp=n(b.precio);
+      if((bp>0)!==(ap>0))return (bp>0)-(ap>0);
+      return String(a.created_at||'').localeCompare(String(b.created_at||''));
+    })[0];
+  }
+  function dedupe(lista){
+    const grupos=new Map();
+    (lista||[]).forEach(x=>{const k=clave(x); if(!grupos.has(k))grupos.set(k,[]); grupos.get(k).push(x);});
+    const buenos=[], dup=[];
+    grupos.forEach(g=>{const keep=mejorGrupo(g); buenos.push(keep); g.forEach(x=>{if(rowId(x)!==rowId(keep))dup.push(x);});});
+    return {buenos,dup,grupos};
+  }
+  async function leerCarritoNube(){
+    const c=dbx(); if(!c){setCart([]); return []}
+    const r=await c.from(TAB_CARRITO).select('*').eq('activo',true).eq('estado','pendiente').order('created_at',{ascending:true});
+    if(r.error)throw r.error;
+    const items=(r.data||[]).map(itemDesdeFila);
+    const d=dedupe(items);
+    if(d.dup.length)await marcarIds(d.dup.map(rowId),'duplicado');
+    setCart(d.buenos);
+    return d.buenos;
+  }
+  async function marcarIds(ids,estado){
+    const c=dbx(); ids=[...new Set((ids||[]).filter(isUuid))]; if(!c||!ids.length)return;
+    try{await c.from(TAB_CARRITO).update({activo:false,estado:estado||'comprado'}).in('id',ids);}catch(e){}
+    for(const id of ids){try{await c.from(TAB_CARRITO).delete().eq('id',id);}catch(e){}}
+  }
+  async function idsDelMismoProducto(item){
+    const c=dbx(); if(!c)return [];
+    const r=await c.from(TAB_CARRITO).select('*').eq('activo',true).eq('estado','pendiente').limit(1000);
+    if(r.error)return [rowId(item)].filter(Boolean);
+    const k=clave(item), nm=norm(nombreItem(item));
+    return (r.data||[]).map(itemDesdeFila).filter(x=>clave(x)===k || (norm(nombreItem(x))===nm && norm(x.tienda||'')===norm(item.tienda||''))).map(rowId).filter(Boolean);
+  }
+  async function refrescarDespues(){
+    try{await leerCarritoNube();}catch(e){console.warn('No pude recargar carrito',e)}
+    try{if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido();}catch(e){}
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla();}catch(e){}
+  }
+  window.hc1413RefrescarCarrito=refrescarDespues;
+  window.cargarCarritoOnline=leerCarritoNube;
+  window.cargarCarritoSupabase=leerCarritoNube;
+  window.hc133CargarCarritoOnline=leerCarritoNube;
+
+  async function buscarProductoPorNombre(nombre){
+    const c=dbx(); if(!c)return null;
+    const objetivo=norm(nombre);
+    if(!objetivo)return null;
+    let local=getProductos().find(p=>norm(p.nombre)===objetivo)||null;
+    if(local)return local;
+    try{
+      const r=await c.from(TAB_PRODUCTOS).select('*').ilike('nombre',nombre).limit(20);
+      if(!r.error && r.data?.length){
+        const exact=(r.data||[]).find(p=>norm(p.nombre)===objetivo)||r.data[0];
+        return exact||null;
+      }
+    }catch(e){}
+    try{
+      const r=await c.from(TAB_PRODUCTOS).select('*').limit(5000);
+      if(!r.error && r.data?.length)return (r.data||[]).find(p=>norm(p.nombre)===objetivo)||null;
+    }catch(e){}
+    return null;
+  }
+  async function resolverOCrearProducto(item){
+    const c=dbx(); if(!c)throw new Error('No hay conexión con Supabase.');
+    const pid=prodId(item);
+    if(pid){
+      try{const r=await c.from(TAB_PRODUCTOS).select('*').eq('id',pid).maybeSingle(); if(!r.error&&r.data)return r.data;}catch(e){}
+    }
+    let p=await buscarProductoPorNombre(nombreItem(item));
+    if(p)return p;
+    const nuevo={
+      nombre:nombreItem(item),
+      categoria:item.categoria||'Sin categoría',
+      tipo_control:'mensual',
+      perecedero:false,
+      dias_cobertura:30,
+      cantidad:0,
+      unidad:item.unidad||'pz',
+      minimo:0,
+      precio:n(item.precio||item.precio_estimado),
+      tienda_preferida:item.tienda||'Sin tienda',
+      notas:'Creado desde carrito. Primera compra.',
+      actualizado:new Date().toISOString()
+    };
+    let r=await c.from(TAB_PRODUCTOS).insert(nuevo).select('*').single();
+    if(r.error){
+      const simple={nombre:nuevo.nombre,categoria:nuevo.categoria,cantidad:0,unidad:nuevo.unidad,minimo:0,precio:nuevo.precio,tienda_preferida:nuevo.tienda_preferida,notas:nuevo.notas,actualizado:nuevo.actualizado};
+      r=await c.from(TAB_PRODUCTOS).insert(simple).select('*').single();
+    }
+    if(r.error)throw r.error;
+    const arr=getProductos(); arr.push(r.data); setProductos(arr);
+    return r.data;
+  }
+  async function sumarCompra(item,cantidad,precioUnit,tienda){
+    const c=dbx(); if(!c)throw new Error('No hay conexión con Supabase.');
+    const prod=await resolverOCrearProducto(item);
+    const unit=precioUnit>0?precioUnit:n(prod.precio);
+    const total=cantidad*unit;
+    const compra={producto_id:prod.id,producto:prod.nombre||nombreItem(item),tienda:tienda||item.tienda||prod.tienda_preferida||'Sin tienda',cantidad,precio:unit,total,fecha:fechaHoy(),usuario:usuario()};
+    const ins=await c.from(TAB_COMPRAS).insert(compra);
+    if(ins.error)throw ins.error;
+    const nuevaCantidad=n(prod.cantidad)+cantidad;
+    const upd=await c.from(TAB_PRODUCTOS).update({cantidad:nuevaCantidad,precio:unit,tienda_preferida:compra.tienda,actualizado:new Date().toISOString()}).eq('id',prod.id);
+    if(upd.error)throw upd.error;
+    prod.cantidad=nuevaCantidad; prod.precio=unit; prod.tienda_preferida=compra.tienda;
+    return compra;
+  }
+
+  window.confirmarProductoCarrito=async function(id){
+    if(busy)return alert('Estoy actualizando el carrito, espera un momento.');
+    busy=true;
+    try{
+      const lista=await leerCarritoNube();
+      const item=lista.find(x=>String(x.tmp)===String(id)||String(x.id)===String(id)||String(x.cloud_id)===String(id));
+      if(!item){await refrescarDespues(); return alert('Ese producto ya no está pendiente.');}
+      const cantidadTxt=prompt('Cantidad comprada de '+nombreItem(item)+':',String(n(item.cantidad)||1));
+      if(cantidadTxt===null)return;
+      const cantidad=n(cantidadTxt); if(cantidad<=0)return alert('Cantidad inválida.');
+      const precioTxt=prompt('Precio unitario pagado de '+nombreItem(item)+':',String(n(item.precio||item.precio_estimado)));
+      if(precioTxt===null)return;
+      const precio=n(precioTxt); if(precio<0)return alert('Precio inválido.');
+      const tiendaTxt=prompt('Tienda:',item.tienda||'Sin tienda');
+      if(tiendaTxt===null)return;
+      const tienda=String(tiendaTxt||item.tienda||'Sin tienda').trim()||'Sin tienda';
+      if(!confirm(`¿Confirmar producto?\n\n${nombreItem(item)}\nCantidad: ${cantidad}\nTotal: $${fmt(cantidad*precio)}\n\nSe sumará al inventario y saldrá del carrito.`))return;
+      const compra=await sumarCompra(item,cantidad,precio,tienda);
+      const ids=await idsDelMismoProducto(item);
+      await marcarIds(ids,'comprado');
+      try{if(typeof auditar==='function')await auditar('confirmar_producto_carrito_limpio',nombreItem(item),compra);}catch(e){}
+      try{if(typeof cargarTodo==='function')await cargarTodo();}catch(e){}
+      await refrescarDespues();
+      alert('Producto confirmado y quitado del carrito.');
+    }catch(e){alert('No pude confirmar: '+(e.message||e));}
+    finally{busy=false;}
+  };
+
+  window.confirmarCarrito=async function(){
+    if(busy)return alert('Estoy actualizando el carrito, espera un momento.');
+    busy=true;
+    try{
+      const lista=await leerCarritoNube();
+      if(!lista.length)return alert('El carrito está vacío.');
+      const tiendaCampo=document.getElementById('tiendaCompraCarrito');
+      const tiendaGlobal=String(tiendaCampo?.value||'').trim();
+      if(!confirm(`¿Confirmar compra completa?\n\nSe guardarán ${lista.length} producto(s) únicos.\nLos duplicados no se sumarán doble.`))return;
+      const hechos=[];
+      for(const item of lista){
+        const cantidad=n(item.cantidad)||1;
+        const precio=n(item.precio||item.precio_estimado);
+        const tienda=tiendaGlobal||item.tienda||'Sin tienda';
+        const compra=await sumarCompra(item,cantidad,precio,tienda);
+        hechos.push(compra);
+        const ids=await idsDelMismoProducto(item);
+        await marcarIds(ids,'comprado');
+      }
+      try{if(typeof auditar==='function')await auditar('confirmar_carrito_limpio',`${hechos.length} productos`,{compras:hechos});}catch(e){}
+      try{if(typeof cargarTodo==='function')await cargarTodo();}catch(e){}
+      await refrescarDespues();
+      alert('Compra confirmada. El carrito ya quedó limpio.');
+    }catch(e){alert('No pude confirmar carrito: '+(e.message||e));}
+    finally{busy=false;}
+  };
+
+  window.quitarCarrito=async function(id){
+    if(busy)return alert('Estoy actualizando el carrito, espera un momento.');
+    busy=true;
+    try{
+      const lista=await leerCarritoNube();
+      const item=lista.find(x=>String(x.tmp)===String(id)||String(x.id)===String(id)||String(x.cloud_id)===String(id));
+      if(!item){await refrescarDespues(); return;}
+      const ids=await idsDelMismoProducto(item);
+      await marcarIds(ids,'quitado');
+      await refrescarDespues();
+    }catch(e){alert('No pude quitar: '+(e.message||e));}
+    finally{busy=false;}
+  };
+
+  window.vaciarCarrito=async function(){
+    if(busy)return alert('Estoy actualizando el carrito, espera un momento.');
+    if(!confirm('¿Vaciar carrito?'))return;
+    busy=true;
+    try{
+      const lista=await leerCarritoNube();
+      await marcarIds(lista.map(rowId).filter(Boolean),'quitado');
+      setCart([]);
+      await refrescarDespues();
+    }catch(e){alert('No pude vaciar: '+(e.message||e));}
+    finally{busy=false;}
+  };
+
+  window.addEventListener('load',()=>setTimeout(refrescarDespues,1200));
+})();
+</script>
+
+
+<!-- HC 14.16: desbloqueo automático si Supabase tarda demasiado -->
+<style id="hc1416-timeout-css">
+.hc-servidor-wait.hc-timeout{
+  background:linear-gradient(135deg,#f97316,#ef4444)!important;
+}
+.hc-server-unlock-btn{
+  margin-left:10px;border:0;border-radius:14px;padding:8px 12px;font-weight:950;
+  background:rgba(255,255,255,.95);color:#0f172a;box-shadow:0 8px 18px rgba(0,0,0,.22);
+}
+</style>
+<script id="hc1416-timeout-desbloqueo">
+/* HC 14.16
+   Evita que HomeControl se quede bloqueado si Supabase o un refresco tarda demasiado.
+   - Desbloquea botones después de un tiempo prudente.
+   - Muestra aviso claro.
+   - Mantiene protección contra doble clic al inicio de la operación.
+*/
+(function(){
+  if(window.HC1416_TIMEOUT_DESBLOQUEO)return;
+  window.HC1416_TIMEOUT_DESBLOQUEO=true;
+
+  const MAX_MS=18000;
+  let timer=null;
+  let started=0;
+
+  function box(){return document.getElementById('hcServidorWait');}
+  function setTxt(txt,sub){
+    const b=box(); if(!b)return;
+    const bold=b.querySelector('b'); if(bold)bold.textContent=txt||'Servidor tardó demasiado';
+    const small=b.querySelector('small'); if(small)small.textContent=sub||'Se liberó la pantalla. Revisa si el producto ya aparece antes de tocar otra vez.';
+  }
+  function quitarBloqueoVisual(){
+    try{document.body.style.cursor='';}catch(e){}
+    document.querySelectorAll('button').forEach(btn=>{
+      try{
+        btn.disabled=false;
+        btn.classList.remove('hc-btn-procesando');
+        if(btn.hasAttribute('data-hc-old-text')){
+          btn.innerHTML=btn.getAttribute('data-hc-old-text');
+          btn.removeAttribute('data-hc-old-text');
+        }
+      }catch(e){}
+    });
+    document.querySelectorAll('.hc-form-bloqueado').forEach(x=>x.classList.remove('hc-form-bloqueado'));
+    window.HC1415_PROCESANDO=false;
+  }
+  function liberarPorTimeout(){
+    const b=box();
+    quitarBloqueoVisual();
+    if(b){
+      b.classList.add('on','hc-timeout');
+      setTxt('⚠️ Servidor tardó demasiado', 'Pantalla liberada. Revisa carrito/inventario antes de presionar otra vez.');
+      if(!b.querySelector('.hc-server-unlock-btn')){
+        const btn=document.createElement('button');
+        btn.type='button';
+        btn.className='hc-server-unlock-btn';
+        btn.textContent='Cerrar aviso';
+        btn.onclick=function(){b.classList.remove('on','hc-timeout');};
+        b.appendChild(btn);
+      }
+      setTimeout(()=>{try{b.classList.remove('on','hc-timeout');}catch(e){}},6500);
+    }
+    try{ if(typeof cargarCarritoOnline==='function') cargarCarritoOnline(); }catch(e){}
+    try{ if(typeof mostrarCarrito==='function') mostrarCarrito(); }catch(e){}
+    try{ if(typeof actualizarPantalla==='function') actualizarPantalla(); }catch(e){}
+  }
+  function iniciarWatch(){
+    clearTimeout(timer);
+    started=Date.now();
+    timer=setTimeout(liberarPorTimeout,MAX_MS);
+  }
+  function cerrarWatch(){
+    clearTimeout(timer); timer=null; started=0;
+    const b=box(); if(b)b.classList.remove('hc-timeout');
+  }
+
+  // Vigilar el aviso de espera existente. Si aparece, comienza cuenta de seguridad.
+  const obs=new MutationObserver(()=>{
+    const b=box();
+    const activo=!!(b&&b.classList.contains('on'));
+    if(activo && !timer) iniciarWatch();
+    if(!activo && timer) cerrarWatch();
+  });
+  function instalarObs(){
+    try{obs.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});}catch(e){}
+  }
+  if(document.body)instalarObs(); else document.addEventListener('DOMContentLoaded',instalarObs);
+
+  // Botón manual de emergencia: mantener 3 segundos sobre cualquier aviso de espera no es práctico en móvil,
+  // por eso se agrega un botón pequeño automáticamente después de 6 segundos.
+  setInterval(()=>{
+    const b=box();
+    if(!b||!b.classList.contains('on'))return;
+    if(started && Date.now()-started>6000 && !b.querySelector('.hc-server-unlock-btn')){
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='hc-server-unlock-btn';
+      btn.textContent='Liberar pantalla';
+      btn.onclick=function(){cerrarWatch();quitarBloqueoVisual();b.classList.remove('on','hc-timeout');};
+      b.appendChild(btn);
+    }
+  },1000);
+
+  // En caso de que un parche viejo deje botones deshabilitados sin aviso visible.
+  setInterval(()=>{
+    const b=box();
+    const avisoActivo=!!(b&&b.classList.contains('on'));
+    const hayProcesando=document.querySelector('.hc-btn-procesando, .hc-form-bloqueado');
+    if(hayProcesando && !avisoActivo && !window.HC1415_PROCESANDO){quitarBloqueoVisual();}
+  },4000);
+})();
+</script>
+
+<!-- HC 14.17: Carritos separados por tienda, solo si tienen productos -->
+<style id="hc1417-carritos-tienda-css">
+.hc1417-store-cart{margin:14px 0 18px;border:1px solid rgba(148,163,184,.25);border-radius:24px;overflow:hidden;background:rgba(15,23,42,.55);box-shadow:0 14px 30px rgba(0,0,0,.18)}
+.hc1417-store-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(135deg,rgba(34,197,94,.28),rgba(14,165,233,.22));font-weight:950;color:#fff}
+.hc1417-store-head b{font-size:18px}.hc1417-store-head small{display:block;color:#dbeafe;font-weight:800;margin-top:3px}
+.hc1417-store-total{font-size:20px;background:rgba(16,185,129,.22);padding:8px 12px;border-radius:16px;white-space:nowrap}
+.hc1417-store-list{display:flex;flex-direction:column;gap:8px;padding:12px}
+.hc1417-row{display:grid;grid-template-columns:1.7fr .55fr .75fr .75fr auto;gap:8px;align-items:center;padding:12px;border-radius:18px;background:rgba(15,23,42,.62);color:#fff}
+.hc1417-row-title{font-weight:950}.hc1417-row-title small{display:block;color:#cbd5e1;font-weight:800;margin-top:2px}
+.hc1417-actions{display:flex;gap:7px;justify-content:flex-end}.hc1417-actions button{min-width:42px!important;padding:10px 12px!important;border-radius:16px!important}
+.hc1417-confirm{margin:0 12px 14px;width:calc(100% - 24px);border-radius:20px!important;background:linear-gradient(135deg,#22c55e,#06b6d4)!important;color:#fff!important;font-weight:950!important}
+.hc1417-empty{padding:16px;border-radius:18px;background:rgba(15,23,42,.5);color:#cbd5e1;font-weight:800;text-align:center}
+@media(max-width:720px){.hc1417-row{grid-template-columns:1.45fr .45fr .7fr auto}.hc1417-row .hc1417-total{display:none}.hc1417-store-head{align-items:flex-start}.hc1417-store-total{font-size:17px}.hc1417-row{font-size:13px}.hc1417-row-title{font-size:14px}}
+</style>
+<script id="hc1417-carritos-por-tienda">
+/* HC 14.17
+   Carritos por tienda sin crear carritos vacíos.
+   Usa la misma tabla home_carrito_compartido y agrupa por la columna tienda.
+*/
+(function(){
+  if(window.HC1417_CARRITOS_TIENDA)return;
+  window.HC1417_CARRITOS_TIENDA=true;
+
+  const TAB_CARRITO='home_carrito_compartido';
+  const TAB_PRODUCTOS='despensa_productos';
+  const TAB_COMPRAS='despensa_compras';
+  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  let busy=false;
+
+  function dbx(){try{if(typeof db!=='undefined'&&db)return db}catch(e){} return window.db||null}
+  function isUuid(v){return UUID.test(String(v||''))}
+  function num(v){return Number(String(v??0).replace(',','.'))||0}
+  function moneyX(v){try{return typeof money==='function'?money(v):num(v).toFixed(2)}catch(e){return num(v).toFixed(2)}}
+  function esc(s){return String(s??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]))}
+  function norm(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim()}
+  function tiendaKey(s){const t=String(s||'').trim();return t||'Sin tienda'}
+  function nombre(x){return String(x?.nombre||x?.producto||'Producto').trim()||'Producto'}
+  function rowId(x){return [x?.cloud_id,x?.id,x?.tmp].find(isUuid)||null}
+  function prodId(x){return isUuid(x?.producto_id)?String(x.producto_id):null}
+  function claveProducto(x){return prodId(x)||('nombre:'+norm(nombre(x))+'|tienda:'+norm(x?.tienda||''))}
+  function getCart(){try{if(Array.isArray(window.carrito))return window.carrito}catch(e){} try{if(Array.isArray(carrito))return carrito}catch(e){} try{if(Array.isArray(carritoActual))return carritoActual}catch(e){} return []}
+  function setCart(a){a=Array.isArray(a)?a:[];try{window.carrito=a}catch(e){} try{carrito=a}catch(e){} try{carritoActual=a}catch(e){} try{itemsCarrito=a}catch(e){} try{localStorage.removeItem('despensaCarrito')}catch(e){}}
+  function getProductos(){try{if(Array.isArray(window.productos))return window.productos}catch(e){} try{if(Array.isArray(productos))return productos}catch(e){} return []}
+  function setProductos(a){try{window.productos=a}catch(e){} try{productos=a}catch(e){}}
+  function fechaHoy(){try{return typeof hoyISO==='function'?hoyISO():new Date().toISOString().slice(0,10)}catch(e){return new Date().toISOString().slice(0,10)}}
+  function usuario(){return window.sesion?.usuario||window.sesion?.nombre||'Jesus Vazquez'}
+
+  function precioFila(r){
+    const cant=Math.max(1,num(r.cantidad)||1);
+    const estimado=num(r.precio_estimado), normal=num(r.precio_normal), oferta=num(r.precio_oferta), aplicado=num(r.precio_aplicado);
+    if(estimado>0)return estimado;
+    if(oferta>0)return oferta;
+    if(normal>0)return normal;
+    if(aplicado>0 && cant>1)return aplicado/cant;
+    return aplicado;
+  }
+  function itemFila(r){
+    const cantidad=num(r.cantidad)||1, precio=precioFila(r);
+    return {tmp:r.id,id:r.id,cloud_id:r.id,producto_id:r.producto_id||null,nombre:r.nombre||'Producto',producto:r.nombre||'Producto',categoria:r.categoria||'',cantidad,unidad:r.unidad||'',tienda:tiendaKey(r.tienda),precio,precio_estimado:precio,total:cantidad*precio,estado:r.estado||'pendiente',activo:r.activo!==false,created_at:r.created_at||''};
+  }
+  function dedupe(lista){
+    const grupos=new Map();
+    (lista||[]).filter(x=>x&&x.activo!==false&&String(x.estado||'pendiente')==='pendiente').forEach(x=>{const k=claveProducto(x); if(!grupos.has(k))grupos.set(k,[]); grupos.get(k).push(x)});
+    const buenos=[], dup=[];
+    grupos.forEach(g=>{
+      g.sort((a,b)=>{const ap=num(a.precio||a.precio_estimado),bp=num(b.precio||b.precio_estimado); if((bp>0)!==(ap>0))return (bp>0)-(ap>0); return String(a.created_at||'').localeCompare(String(b.created_at||''))});
+      buenos.push(g[0]); dup.push(...g.slice(1));
+    });
+    return {buenos,dup};
+  }
+  function agruparTiendas(lista){
+    const d=dedupe(lista).buenos;
+    const map=new Map();
+    d.forEach(x=>{const t=tiendaKey(x.tienda); if(!map.has(t))map.set(t,[]); map.get(t).push(x)});
+    return [...map.entries()].sort((a,b)=>a[0].localeCompare(b[0],'es'));
+  }
+
+  async function leerNube(){
+    const c=dbx(); if(!c){const d=dedupe(getCart()).buenos; setCart(d); return d}
+    const r=await c.from(TAB_CARRITO).select('*').eq('activo',true).eq('estado','pendiente').order('created_at',{ascending:true});
+    if(r.error)throw r.error;
+    const d=dedupe((r.data||[]).map(itemFila));
+    if(d.dup.length)await marcarIds(d.dup.map(rowId),'duplicado');
+    setCart(d.buenos);
+    return d.buenos;
+  }
+  async function marcarIds(ids,estado){
+    const c=dbx(); ids=[...new Set((ids||[]).filter(isUuid))]; if(!c||!ids.length)return;
+    try{await c.from(TAB_CARRITO).update({activo:false,estado:estado||'comprado'}).in('id',ids)}catch(e){}
+    for(const id of ids){try{await c.from(TAB_CARRITO).delete().eq('id',id)}catch(e){}}
+  }
+  async function idsMismo(item){
+    const c=dbx(); if(!c)return [rowId(item)].filter(Boolean);
+    try{
+      const r=await c.from(TAB_CARRITO).select('*').eq('activo',true).eq('estado','pendiente').limit(1000);
+      if(r.error)throw r.error;
+      const k=claveProducto(item), nm=norm(nombre(item)), ti=norm(item.tienda);
+      return (r.data||[]).map(itemFila).filter(x=>claveProducto(x)===k || (norm(nombre(x))===nm && norm(x.tienda)===ti)).map(rowId).filter(Boolean);
+    }catch(e){return [rowId(item)].filter(Boolean)}
+  }
+  async function refrescar(){
+    try{await leerNube()}catch(e){console.warn('No pude leer carritos por tienda',e)}
+    try{mostrarCarrito()}catch(e){}
+    try{if(typeof actualizarPanelCarritoRapido==='function')actualizarPanelCarritoRapido()}catch(e){}
+    try{if(typeof actualizarPantalla==='function')actualizarPantalla()}catch(e){}
+  }
+
+  async function buscarProducto(nombreBuscado){
+    const objetivo=norm(nombreBuscado);
+    let local=getProductos().find(p=>norm(p.nombre)===objetivo)||null;
+    if(local)return local;
+    const c=dbx(); if(!c)return null;
+    try{const r=await c.from(TAB_PRODUCTOS).select('*').ilike('nombre',nombreBuscado).limit(20); if(!r.error&&r.data?.length)return r.data.find(p=>norm(p.nombre)===objetivo)||r.data[0]}catch(e){}
+    try{const r=await c.from(TAB_PRODUCTOS).select('*').limit(5000); if(!r.error&&r.data?.length)return r.data.find(p=>norm(p.nombre)===objetivo)||null}catch(e){}
+    return null;
+  }
+  async function resolverProducto(item){
+    const c=dbx(); if(!c)throw new Error('No hay conexión con Supabase.');
+    if(prodId(item)){try{const r=await c.from(TAB_PRODUCTOS).select('*').eq('id',prodId(item)).maybeSingle(); if(!r.error&&r.data)return r.data}catch(e){}}
+    let p=await buscarProducto(nombre(item)); if(p)return p;
+    const nuevo={nombre:nombre(item),categoria:item.categoria||'Sin categoría',tipo_control:'mensual',perecedero:false,dias_cobertura:30,cantidad:0,unidad:item.unidad||'pz',minimo:0,precio:num(item.precio||item.precio_estimado),tienda_preferida:item.tienda||'Sin tienda',notas:'Creado desde carrito. Primera compra.',actualizado:new Date().toISOString()};
+    let r=await c.from(TAB_PRODUCTOS).insert(nuevo).select('*').single();
+    if(r.error){const simple={nombre:nuevo.nombre,categoria:nuevo.categoria,cantidad:0,unidad:nuevo.unidad,minimo:0,precio:nuevo.precio,tienda_preferida:nuevo.tienda_preferida,notas:nuevo.notas,actualizado:nuevo.actualizado}; r=await c.from(TAB_PRODUCTOS).insert(simple).select('*').single()}
+    if(r.error)throw r.error;
+    const arr=getProductos(); arr.push(r.data); setProductos(arr);
+    return r.data;
+  }
+  async function sumar(item,tiendaOverride){
+    const c=dbx(); if(!c)throw new Error('No hay conexión con Supabase.');
+    const prod=await resolverProducto(item);
+    const cantidad=num(item.cantidad)||1;
+    const precio=num(item.precio||item.precio_estimado||prod.precio);
+    const tienda=tiendaOverride||item.tienda||prod.tienda_preferida||'Sin tienda';
+    const total=cantidad*precio;
+    const compra={producto_id:prod.id,producto:prod.nombre||nombre(item),tienda,cantidad,precio,total,fecha:fechaHoy(),usuario:usuario()};
+    const ins=await c.from(TAB_COMPRAS).insert(compra); if(ins.error)throw ins.error;
+    const nueva=num(prod.cantidad)+cantidad;
+    const upd=await c.from(TAB_PRODUCTOS).update({cantidad:nueva,precio,tienda_preferida:tienda,actualizado:new Date().toISOString()}).eq('id',prod.id); if(upd.error)throw upd.error;
+    prod.cantidad=nueva; prod.precio=precio; prod.tienda_preferida=tienda;
+    return compra;
+  }
+
+  window.hc1417ConfirmarTienda=async function(tienda){
+    if(busy)return alert('Espere, todavía estoy subiendo a servidor.');
+    busy=true;
+    try{
+      if(typeof hc1415Start==='function')hc1415Start('Espere, subiendo a servidor...','Confirmando carrito '+tienda+'. No presiones otra vez.');
+      const lista=await leerNube();
+      const items=dedupe(lista).buenos.filter(x=>tiendaKey(x.tienda)===tiendaKey(tienda));
+      if(!items.length){await refrescar(); return alert('Ese carrito ya está vacío.');}
+      const total=items.reduce((s,x)=>s+(num(x.cantidad)||1)*num(x.precio||x.precio_estimado),0);
+      if(!confirm(`¿Confirmar compra de ${tiendaKey(tienda)}?\n\n${items.length} producto(s) · Total $${moneyX(total)}\n\nSolo se comprará este carrito.`))return;
+      const hechos=[];
+      for(const item of items){
+        hechos.push(await sumar(item,tiendaKey(tienda)));
+        const ids=await idsMismo(item);
+        await marcarIds(ids,'comprado');
+      }
+      try{if(typeof auditar==='function')await auditar('confirmar_carrito_tienda',tiendaKey(tienda),{compras:hechos})}catch(e){}
+      try{if(typeof cargarTodo==='function')await cargarTodo()}catch(e){}
+      await refrescar();
+      alert('Compra de '+tiendaKey(tienda)+' confirmada. Ese carrito ya quedó limpio.');
+    }catch(e){alert('No pude confirmar carrito de tienda: '+(e.message||e));}
+    finally{busy=false; try{if(typeof hc1415End==='function')hc1415End()}catch(e){}}
+  };
+
+  window.hc1417QuitarItem=async function(id){
+    if(busy)return alert('Espere, todavía estoy actualizando.');
+    busy=true;
+    try{const lista=await leerNube(); const item=lista.find(x=>String(rowId(x))===String(id)||String(x.id)===String(id)||String(x.tmp)===String(id)); if(!item)return; await marcarIds(await idsMismo(item),'quitado'); await refrescar()}catch(e){alert('No pude quitar: '+(e.message||e));}
+    finally{busy=false;}
+  };
+
+  const oldMostrar=window.mostrarCarrito;
+  window.mostrarCarrito=function(){
+    const cont=document.getElementById('listaCarrito');
+    const totalEl=document.getElementById('totalCarrito');
+    if(!cont){return typeof oldMostrar==='function'?oldMostrar.apply(this,arguments):undefined}
+    const lista=dedupe(getCart()).buenos;
+    setCart(lista);
+    const grupos=agruparTiendas(lista);
+    const total=lista.reduce((s,x)=>s+(num(x.cantidad)||1)*num(x.precio||x.precio_estimado),0);
+    if(totalEl)totalEl.textContent=moneyX(total);
+    if(!grupos.length){cont.innerHTML='<div class="hc1417-empty">🛒 Carrito vacío. Cuando agregues productos, aparecerán separados por tienda.</div>';return;}
+    cont.innerHTML=grupos.map(([tienda,items])=>{
+      const tot=items.reduce((s,x)=>s+(num(x.cantidad)||1)*num(x.precio||x.precio_estimado),0);
+      const count=items.length;
+      return `<div class="hc1417-store-cart"><div class="hc1417-store-head"><div><b>🏪 Carrito ${esc(tienda)}</b><small>${count} producto(s)</small></div><div class="hc1417-store-total">$${moneyX(tot)}</div></div><div class="hc1417-store-list">${items.map(x=>{const rid=rowId(x)||x.tmp||x.id; const cant=num(x.cantidad)||1; const precio=num(x.precio||x.precio_estimado); return `<div class="hc1417-row"><div class="hc1417-row-title">${esc(nombre(x))}<small>${esc(x.unidad||'')}</small></div><div>${cant}</div><div>$${moneyX(precio)}</div><div class="hc1417-total">$${moneyX(cant*precio)}</div><div class="hc1417-actions"><button class="azul" onclick="editarCarrito&&editarCarrito('${esc(rid)}')">✏️</button><button class="rojo" onclick="hc1417QuitarItem('${esc(rid)}')">×</button></div></div>`}).join('')}</div><button class="hc1417-confirm" onclick="hc1417ConfirmarTienda('${esc(tienda)}')">✅ Confirmar compra de ${esc(tienda)}</button></div>`;
+    }).join('');
+  };
+  try{mostrarCarrito=window.mostrarCarrito}catch(e){}
+
+  const oldCargar=window.cargarCarritoSupabase||window.cargarCarritoOnline;
+  window.cargarCarritoSupabase=async function(){try{return await leerNube()}catch(e){if(typeof oldCargar==='function')return oldCargar(); throw e}};
+  window.cargarCarritoOnline=window.cargarCarritoSupabase;
+  window.hc133CargarCarritoOnline=window.cargarCarritoSupabase;
+
+  window.addEventListener('load',()=>setTimeout(refrescar,1300));
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')setTimeout(refrescar,450)});
+})();
+</script>
+
+<!-- HC 14.18: Carritos por tienda - botón editar correcto y totales del carrito reparados -->
+<style id="hc1418-carritos-fix-css">
+.hc1417-row .hc1418-edit-btn,
+.hc1417-row .hc1418-del-btn{cursor:pointer!important;opacity:1!important;pointer-events:auto!important}
+.hc1417-row .hc1418-edit-btn{background:linear-gradient(135deg,#2563eb,#06b6d4)!important;color:#fff!important}
+.hc1417-row .hc1418-del-btn{background:linear-gradient(135deg,#ef4444,#e11d48)!important;color:#fff!important}
+</style>
+<script id="hc1418-carritos-fix">
+(function(){
+  if(window.HC1418_CARRITOS_FIX)return;
+  window.HC1418_CARRITOS_FIX=true;
+
+  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+  function isUuid(v){return UUID.test(String(v||''));}
+  function n(v){return Number(String(v??0).replace(',','.'))||0;}
+  function fmt(v){try{return typeof money==='function'?money(v):n(v).toFixed(2)}catch(e){return n(v).toFixed(2)}}
+  function esc(s){return String(s??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]));}
+  function norm(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();}
+  function tienda(x){const t=String(x?.tienda||'').trim();return t||'Sin tienda';}
+  function nombre(x){return String(x?.nombre||x?.producto||'Producto').trim()||'Producto';}
+  function rid(x){return [x?.cloud_id,x?.id,x?.tmp].find(isUuid)||x?.tmp||x?.id||'';}
+  function precio(x){return n(x?.precio||x?.precio_estimado||x?.precio_aplicado||x?.precio_oferta||x?.precio_normal||0);}
+  function cart(){try{if(Array.isArray(window.carrito))return window.carrito}catch(e){} try{if(Array.isArray(carrito))return carrito}catch(e){} try{if(Array.isArray(carritoActual))return carritoActual}catch(e){} return []}
+  function productos(){try{if(Array.isArray(window.productos))return window.productos}catch(e){} try{if(Array.isArray(productos))return productos}catch(e){} return []}
+  function limiteMin(p){try{return typeof limiteMinimo==='function'?Number(limiteMinimo(p)):n(p.minimo)}catch(e){return n(p.minimo)}}
+  function key(x){return (isUuid(x?.producto_id)?String(x.producto_id):'') || ('nombre:'+norm(nombre(x))+'|tienda:'+norm(tienda(x)));}
+  function dedupe(lista){
+    const map=new Map();
+    (lista||[]).filter(x=>x&&x.activo!==false&&String(x.estado||'pendiente')==='pendiente').forEach(x=>{
+      const k=key(x); if(!map.has(k))map.set(k,[]); map.get(k).push(x);
+    });
+    const out=[];
+    map.forEach(g=>{
+      g.sort((a,b)=>{
+        const ap=precio(a), bp=precio(b);
+        if((bp>0)!==(ap>0))return (bp>0)-(ap>0);
+        const ac=String(a.created_at||''), bc=String(b.created_at||'');
+        return ac.localeCompare(bc);
+      });
+      out.push(g[0]);
+    });
+    return out;
+  }
+  function gruposTienda(lista){
+    const m=new Map();
+    lista.forEach(x=>{const t=tienda(x); if(!m.has(t))m.set(t,[]); m.get(t).push(x);});
+    return [...m.entries()].sort((a,b)=>a[0].localeCompare(b[0],'es'));
+  }
+  function actualizarTotalesCarrito14(){
+    const ps=productos();
+    const totalDespensa=ps.reduce((s,p)=>s+n(p.cantidad)*n(p.precio),0);
+    const bajos=ps.filter(p=>n(p.cantidad)<=limiteMin(p)).length;
+    const a=document.getElementById('totalInventarioCarrito'); if(a)a.textContent=fmt(totalDespensa);
+    const b=document.getElementById('totalBajosCarrito'); if(b)b.textContent=String(bajos);
+    const c=document.getElementById('totalInventarioInv'); if(c)c.textContent=fmt(totalDespensa);
+    const d=document.getElementById('totalBajosInv'); if(d)d.textContent=String(bajos);
+  }
+  window.hc1418AbrirEditarCarrito=function(id){
+    try{
+      if(typeof window.abrirEditarCarrito==='function')return window.abrirEditarCarrito(id);
+      if(typeof abrirEditarCarrito==='function')return abrirEditarCarrito(id);
+      alert('No encontré la función de edición del carrito.');
+    }catch(e){alert('No pude abrir edición: '+(e.message||e));}
+  };
+  const oldMostrar=window.mostrarCarrito;
+  window.mostrarCarrito=function(){
+    const cont=document.getElementById('listaCarrito');
+    const totalEl=document.getElementById('totalCarrito');
+    if(!cont){return typeof oldMostrar==='function'?oldMostrar.apply(this,arguments):undefined;}
+    const lista=dedupe(cart());
+    try{window.carrito=lista}catch(e){} try{carrito=lista}catch(e){} try{carritoActual=lista}catch(e){}
+    const total=lista.reduce((s,x)=>s+(n(x.cantidad)||1)*precio(x),0);
+    if(totalEl)totalEl.textContent=fmt(total);
+    actualizarTotalesCarrito14();
+    const grupos=gruposTienda(lista);
+    if(!grupos.length){cont.innerHTML='<div class="hc1417-empty">🛒 Carrito vacío. Cuando agregues productos, aparecerán separados por tienda.</div>';return;}
+    cont.innerHTML=grupos.map(([t,items])=>{
+      const tot=items.reduce((s,x)=>s+(n(x.cantidad)||1)*precio(x),0);
+      return `<div class="hc1417-store-cart">
+        <div class="hc1417-store-head"><div><b>🏪 Carrito ${esc(t)}</b><small>${items.length} producto(s)</small></div><div class="hc1417-store-total">$${fmt(tot)}</div></div>
+        <div class="hc1417-store-list">${items.map(x=>{const id=rid(x); const cant=n(x.cantidad)||1; const pr=precio(x); return `<div class="hc1417-row"><div class="hc1417-row-title">${esc(nombre(x))}<small>${esc(x.unidad||'')}</small></div><div>${cant}</div><div>$${fmt(pr)}</div><div class="hc1417-total">$${fmt(cant*pr)}</div><div class="hc1417-actions"><button type="button" class="azul hc1418-edit-btn" onclick="hc1418AbrirEditarCarrito('${esc(id)}')">✏️</button><button type="button" class="rojo hc1418-del-btn" onclick="hc1417QuitarItem('${esc(id)}')">×</button></div></div>`}).join('')}</div>
+        <button type="button" class="hc1417-confirm" onclick="hc1417ConfirmarTienda('${esc(t)}')">✅ Confirmar compra de ${esc(t)}</button>
+      </div>`;
+    }).join('');
+  };
+  try{mostrarCarrito=window.mostrarCarrito}catch(e){}
+  const oldAct=window.actualizarPantalla;
+  window.actualizarPantalla=function(){
+    const r=typeof oldAct==='function'?oldAct.apply(this,arguments):undefined;
+    try{actualizarTotalesCarrito14()}catch(e){}
+    return r;
+  };
+  window.hc1418ActualizarTotalesCarrito=actualizarTotalesCarrito14;
+  setTimeout(()=>{try{actualizarTotalesCarrito14(); if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}},800);
+  setInterval(()=>{try{actualizarTotalesCarrito14()}catch(e){}},5000);
 })();
 </script>
