@@ -6500,6 +6500,56 @@ async function hcRegistrarHistorialPrecio(item,prod){
     if(r.error) console.warn('Historial precios no guardado:', r.error.message||r.error);
   }catch(e){console.warn('Historial precios no guardado:',e);}
 }
+async function confirmarProductoCarrito(tmp){
+  if(!carrito.length)return alert('El carrito está vacío');
+  const item=carrito.find(x=>String(x.tmp)===String(tmp));
+  if(!item)return alert('No encontré ese producto en el carrito.');
+  const prod=hcBuscarProductoCarrito(item);
+  const productoId = hcUUIDValido(prod?.id || item.producto_id) ? (prod?.id || item.producto_id) : null;
+  if(!productoId){
+    return alert(`No se encontró el producto original: ${item.producto||'Sin nombre'}. Quítalo del carrito y vuelve a agregarlo desde Inventario.`);
+  }
+
+  const cantidadTxt=prompt(`Cantidad comprada de ${item.producto}:`, String(item.cantidad||1));
+  if(cantidadTxt===null)return;
+  const cantidad=Number(String(cantidadTxt).replace(',','.'));
+  if(!(cantidad>0))return alert('Cantidad inválida.');
+
+  const precioTxt=prompt(`Precio unitario pagado de ${item.producto}:`, String(Number(item.precio||0)));
+  if(precioTxt===null)return;
+  const precio=Number(String(precioTxt).replace(',','.'));
+  if(precio<0 || isNaN(precio))return alert('Precio inválido.');
+
+  const tiendaTxt=prompt('Tienda donde lo compraste:', item.tienda || prod?.tienda_preferida || 'Sin tienda');
+  if(tiendaTxt===null)return;
+  const tienda=(tiendaTxt.trim() || item.tienda || prod?.tienda_preferida || 'Sin tienda');
+
+  const total=cantidad*precio;
+  if(!confirm(`¿Agregar al inventario solo este producto?\n\n${item.producto}\nCantidad: ${cantidad}\nPrecio: $${money(precio)}\nTienda: ${tienda}\nTotal: $${money(total)}`))return;
+
+  try{
+    setSync('Guardando producto comprado...');
+    const compra={producto_id:productoId,producto:item.producto,tienda,cantidad,precio,total,fecha:hoyISO(),usuario:sesion?.usuario||''};
+    const r1=await db.from('despensa_compras').insert(compra);
+    if(r1.error)return alert(r1.error.message);
+
+    await hcRegistrarHistorialPrecio({...item,producto_id:productoId,cantidad,precio,total,tienda},prod);
+
+    if(prod){
+      const nuevaCantidad=Number(prod.cantidad||0)+cantidad;
+      const r2=await db.from('despensa_productos').update({cantidad:nuevaCantidad,precio,tienda_preferida:tienda,actualizado:new Date().toISOString()}).eq('id',prod.id);
+      if(r2.error)return alert(r2.error.message);
+    }
+
+    await auditar('confirmar_producto_carrito', item.producto, {producto:item.producto,cantidad,precio,total,tienda});
+    carrito=carrito.filter(x=>String(x.tmp)!==String(tmp));
+    guardarCarrito();
+    await cargarTodo();
+    alert('Producto agregado al inventario y quitado del carrito.');
+  }catch(e){
+    alert(e.message || e);
+  }
+}
 async function confirmarCarrito(){
   if(!carrito.length)return alert('El carrito está vacío');
   if(!confirm('¿Confirmar compra? Esto subirá inventario y guardará historial de precios.'))return;
@@ -7746,7 +7796,7 @@ function mostrarCarrito(){
 
   const total=carrito.reduce((s,x)=>s+totalItemCarrito(x),0);
   totalCarrito.textContent=money(total);
-  listaCarrito.innerHTML=carrito.map(x=>`<div class="cart-row"><div><b>${x.producto}</b><br><span class="muted">${x.tienda}</span>${x.fue_oferta?`<br><span class="pill ok">🏷️ Oferta</span>`:''}${x.nota?`<br><span class="muted">${x.nota}</span>`:''}</div><div>${formatearCantidadCarrito(x)}</div><div><b>$${money(totalItemCarrito(x))}</b></div><div class="hide-m"><b>$${money(totalItemCarrito(x))}</b></div><div><button class="azul mini" onclick="abrirEditarCarrito('${x.tmp}')">✏️</button><button class="rojo mini" onclick="quitarCarrito('${x.tmp}')">X</button></div></div>`).join('')||'<p class="muted">Carrito vacío.</p>';
+  listaCarrito.innerHTML=carrito.map(x=>`<div class="cart-row"><div><b>${x.producto}</b><br><span class="muted">${x.tienda}</span>${x.fue_oferta?`<br><span class="pill ok">🏷️ Oferta</span>`:''}${x.nota?`<br><span class="muted">${x.nota}</span>`:''}</div><div>${formatearCantidadCarrito(x)}</div><div><b>$${money(totalItemCarrito(x))}</b></div><div class="hide-m"><b>$${money(totalItemCarrito(x))}</b></div><div class="cart-actions"><button class="azul mini" title="Editar" onclick="abrirEditarCarrito('${x.tmp}')">✏️</button><button class="verde mini" title="Comprado / agregar al inventario" onclick="confirmarProductoCarrito('${x.tmp}')">✅</button><button class="rojo mini" title="Quitar" onclick="quitarCarrito('${x.tmp}')">X</button></div></div>`).join('')||'<p class="muted">Carrito vacío.</p>';
 }
 function mostrarConsumos(){historialConsumo.innerHTML=consumos.map(c=>`<div class="item"><b>${c.producto}</b><br>Consumido: ${c.cantidad}<br><span class="muted">${c.fecha} | ${c.usuario} | ${c.nota||'Sin nota'}</span></div>`).join('')||'<p class="muted">Sin consumo registrado.</p>'}
 function mostrarCategorias(){listaCategorias.innerHTML=categorias.map(c=>`<div class="item"><b>${c.nombre}</b><button class="rojo mini" onclick="eliminarCategoria('${c.id}')">Eliminar</button></div>`).join('')||'<p class="muted">Sin categorías.</p>'}
@@ -19011,6 +19061,14 @@ body.dark #carrito .success-text{background:linear-gradient(135deg,#064e3b,#1453
   border:1px solid rgba(14,165,233,.18);
 }
 body.dark #carrito .granel-box{background:linear-gradient(135deg,rgba(12,74,110,.35),rgba(20,83,45,.35));border-color:rgba(255,255,255,.08)}
+
+#carrito button.verde{background:linear-gradient(135deg,#22c55e,#14b8a6)!important;color:#fff!important}
+#listaCarrito .cart-actions{display:flex!important;gap:5px!important;align-items:center!important;justify-content:flex-end!important}
+#listaCarrito .cart-actions button{flex:1 1 0!important;min-width:42px!important;margin:0!important}
+@media(max-width:650px){
+  #carrito .cart-row div.cart-actions{display:grid!important;grid-template-columns:repeat(3,1fr)!important;gap:6px!important;grid-column:1 / -1!important}
+  #carrito .cart-row div.cart-actions button{width:100%!important;margin-top:2px!important}
+}
 @media(max-width:650px){
   #carrito{padding:14px!important;border-radius:23px!important}
   #carrito h2{font-size:28px!important}
