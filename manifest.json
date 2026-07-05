@@ -1,16 +1,27 @@
 {
+  "id": "/Despensa/?app=com.homecontrolia.jesusvazquez",
   "name": "HomeControl IA",
   "short_name": "HomeControl",
   "description": "Centro inteligente del hogar: despensa, gastos, carrito, consumo y reportes.",
-  "start_url": "./index.html",
-  "scope": "./",
+  "start_url": "/Despensa/index.html?app=com.homecontrolia.jesusvazquez",
+  "scope": "/Despensa/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#eafcf7",
   "theme_color": "#10b981",
   "categories": ["productivity", "utilities", "lifestyle"],
   "icons": [
-    {"src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
-    {"src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+    {
+      "src": "/Despensa/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/Despensa/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ]
 }
