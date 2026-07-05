@@ -29186,3 +29186,161 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
   }
 })();
 </script>
+
+
+<!-- HC 14.31: Fecha y hora también para consumo múltiple, sin tocar lo demás -->
+<style id="hc1431-consumo-multiple-fecha-css">
+  #hc1366FechaHoraConsumo{
+    width:100%;
+    box-sizing:border-box;
+    margin:10px 0 12px;
+  }
+  #hc1431FechaLabel{
+    display:block;
+    margin:10px 0 4px;
+    font-weight:800;
+    color:#64748b;
+  }
+</style>
+<script id="hc1431-consumo-multiple-fecha-hora">
+(function(){
+  if(window.HC1431_CONSUMO_MULTIPLE_FECHA)return;
+  window.HC1431_CONSUMO_MULTIPLE_FECHA=true;
+
+  function n(v){return Number(v||0)||0}
+  function arrProductos(){
+    try{ if(typeof productos!=="undefined" && Array.isArray(productos)) return productos; }catch(e){}
+    return Array.isArray(window.productos)?window.productos:[];
+  }
+  function productoPorId(id){return arrProductos().find(p=>String(p.id)===String(id))}
+  function usuario(){try{return sesion?.usuario || sesion?.nombre || "Usuario"}catch(e){return "Usuario"}}
+  function pad(x){return String(x).padStart(2,'0')}
+  function localDateTimeValue(d){
+    d=d||new Date();
+    return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())+"T"+pad(d.getHours())+":"+pad(d.getMinutes());
+  }
+  function fechaISOFecha(v){return String(v||localDateTimeValue()).slice(0,10)}
+  function fechaConsumoISO(v){
+    v=String(v||'').trim();
+    if(!v)v=localDateTimeValue();
+    const d=new Date(v);
+    if(!isNaN(d))return d.toISOString();
+    return new Date().toISOString();
+  }
+
+  function asegurarCampoFechaMultiple(){
+    const nota=document.getElementById('hc1366NotaGeneral');
+    if(!nota)return;
+    let input=document.getElementById('hc1366FechaHoraConsumo');
+    if(!input){
+      const label=document.createElement('label');
+      label.id='hc1431FechaLabel';
+      label.className='muted';
+      label.textContent='Fecha y hora del consumo múltiple:';
+      input=document.createElement('input');
+      input.id='hc1366FechaHoraConsumo';
+      input.type='datetime-local';
+      input.value=localDateTimeValue();
+      nota.insertAdjacentElement('afterend',input);
+      nota.insertAdjacentElement('afterend',label);
+    }else if(!input.value){
+      input.value=localDateTimeValue();
+    }
+  }
+
+  window.hc1431ActualizarFechaConsumoMultiple=function(){
+    const input=document.getElementById('hc1366FechaHoraConsumo');
+    if(input && !input.value)input.value=localDateTimeValue();
+  };
+
+  // Reinstala el campo cuando se redibuja o se cambia de panel.
+  const oldRender=window.hc1366RenderProductos;
+  if(typeof oldRender==='function' && !oldRender.__hc1431){
+    const nuevo=function(){
+      const r=oldRender.apply(this,arguments);
+      setTimeout(asegurarCampoFechaMultiple,30);
+      return r;
+    };
+    nuevo.__hc1431=true;
+    window.hc1366RenderProductos=nuevo;
+    try{hc1366RenderProductos=nuevo}catch(e){}
+  }
+
+  // Nueva versión de consumo múltiple: conserva lógica original y agrega fecha_consumo.
+  window.registrarProductosConsumidos=async function(){
+    asegurarCampoFechaMultiple();
+    const seleccion=Object.values(window.hc1366Seleccion||{}).filter(x=>n(x.cantidad)>0);
+    if(!seleccion.length)return alert('Selecciona productos y escribe cuánto consumiste.');
+
+    const porProducto={};
+    seleccion.forEach(x=>{porProducto[x.producto_id]=(porProducto[x.producto_id]||0)+n(x.cantidad);});
+
+    for(const [id,cantidad] of Object.entries(porProducto)){
+      const p=productoPorId(id);
+      if(!p)return alert('Producto no encontrado');
+      if(cantidad<=0)return alert('Cantidad inválida en '+p.nombre);
+      if(cantidad>n(p.cantidad))return alert('No hay suficiente inventario de '+p.nombre);
+    }
+
+    const nota=(document.getElementById('hc1366NotaGeneral')?.value||'Productos consumidos').trim() || 'Productos consumidos';
+    const fechaValor=document.getElementById('hc1366FechaHoraConsumo')?.value || localDateTimeValue();
+    const fecha=fechaISOFecha(fechaValor);
+    const fecha_consumo=fechaConsumoISO(fechaValor);
+    const grupo='CONSUMO_'+Date.now();
+    const resumen=Object.entries(porProducto).map(([id,cantidad])=>{
+      const p=productoPorId(id);
+      return `• ${p.nombre}: ${cantidad} ${p.unidad||''}`;
+    }).join('\n');
+
+    if(!confirm(`¿Descontar estos productos?\n\nFecha: ${new Date(fecha_consumo).toLocaleString()}\n\n${resumen}`))return;
+
+    const registros=Object.entries(porProducto).map(([id,cantidad])=>{
+      const p=productoPorId(id);
+      return {
+        producto_id:id,
+        producto:p.nombre,
+        cantidad,
+        nota:`${nota} [${grupo}]`,
+        fecha,
+        fecha_consumo,
+        usuario:usuario()
+      };
+    });
+
+    const r1=await db.from('despensa_consumos').insert(registros);
+    if(r1.error)return alert(r1.error.message);
+
+    for(const [id,cantidad] of Object.entries(porProducto)){
+      const p=productoPorId(id);
+      const nueva=n(p.cantidad)-cantidad;
+      const r2=await db.from('despensa_productos')
+        .update({cantidad:nueva,actualizado:new Date().toISOString()})
+        .eq('id',id);
+      if(r2.error)return alert(r2.error.message);
+      // Actualización local inmediata para que se sienta rápido.
+      try{p.cantidad=nueva;p.actualizado=new Date().toISOString()}catch(e){}
+    }
+
+    try{ await auditar('registrar_productos_consumidos',nota,{grupo,fecha_consumo,registros}); }catch(e){}
+    window.hc1366Seleccion={};
+    const notaEl=document.getElementById('hc1366NotaGeneral');
+    if(notaEl)notaEl.value='';
+    const fechaEl=document.getElementById('hc1366FechaHoraConsumo');
+    if(fechaEl)fechaEl.value=localDateTimeValue();
+
+    // Refresco ligero primero, carga completa después si existe el motor optimizado.
+    try{ if(typeof hc1366RenderProductos==='function')hc1366RenderProductos(); }catch(e){}
+    try{ if(typeof mostrarHistorialConsumo==='function')mostrarHistorialConsumo(); }catch(e){}
+    try{ if(typeof actualizarPantalla==='function')actualizarPantalla(); }catch(e){}
+    try{
+      if(typeof hc1421RefrescarLigero==='function') setTimeout(()=>hc1421RefrescarLigero(),250);
+      else if(typeof cargarTodo==='function') setTimeout(()=>cargarTodo(),250);
+    }catch(e){}
+  };
+  try{registrarProductosConsumidos=window.registrarProductosConsumidos}catch(e){}
+
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(asegurarCampoFechaMultiple,800));
+  window.addEventListener('load',()=>{setTimeout(asegurarCampoFechaMultiple,800);setTimeout(asegurarCampoFechaMultiple,2200)});
+  setTimeout(asegurarCampoFechaMultiple,500);
+})();
+</script>
