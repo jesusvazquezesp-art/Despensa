@@ -29344,3 +29344,78 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
   setTimeout(asegurarCampoFechaMultiple,500);
 })();
 </script>
+
+<!-- HC 14.32: Centro de mando - Gastos del mes unificado con Reportes -->
+<script id="hc1432-gastos-mes-centro-corregido">
+(function(){
+  if(window.HC1432_GASTOS_MES_CENTRO_CORREGIDO) return;
+  window.HC1432_GASTOS_MES_CENTRO_CORREGIDO = true;
+
+  function n(v){ return Number(v||0)||0; }
+  function mon(v){
+    try{ return (typeof money==='function') ? money(v) : n(v).toFixed(2); }
+    catch(e){ return n(v).toFixed(2); }
+  }
+  function fechaMesActual(f){
+    if(!f) return false;
+    const s = String(f);
+    let d;
+    if(s.includes('/')){
+      const a=s.split('/');
+      if(a.length===3) d = new Date(`${a[2]}-${a[1]}-${a[0]}T00:00:00`);
+    }else{
+      d = new Date(s.slice(0,10)+'T00:00:00');
+    }
+    if(!d || isNaN(d)) return false;
+    const hoy=new Date();
+    return d.getMonth()===hoy.getMonth() && d.getFullYear()===hoy.getFullYear();
+  }
+
+  // Fuente oficial para “Gastos del mes” del Centro de Mando:
+  // debe coincidir con Reportes > Mes actual, no con pagos fijos del mes.
+  window.hc1432GastoMesDespensaReal = function(){
+    try{
+      if(typeof gastoMesActual === 'function'){
+        const v=n(gastoMesActual());
+        if(v>0) return v;
+      }
+    }catch(e){}
+    try{
+      const arr = Array.isArray(window.compras) ? window.compras : (Array.isArray(compras) ? compras : []);
+      return arr.filter(c=>fechaMesActual(c.fecha || c.fecha_compra || c.created_at || c.fecha_registro))
+        .reduce((s,c)=>s+n(c.total ?? c.monto ?? (n(c.cantidad)*n(c.precio))),0);
+    }catch(e){ return 0; }
+  };
+
+  function aplicarGastoCentro(){
+    const el=document.getElementById('cmGastoMes');
+    if(!el) return;
+    el.textContent = '$' + mon(window.hc1432GastoMesDespensaReal());
+  }
+
+  function envolver(nombre){
+    const fn=window[nombre];
+    if(typeof fn!=='function' || fn.__hc1432) return;
+    const wrap=function(){
+      const r=fn.apply(this,arguments);
+      setTimeout(aplicarGastoCentro,30);
+      setTimeout(aplicarGastoCentro,250);
+      return r;
+    };
+    wrap.__hc1432=true;
+    window[nombre]=wrap;
+    try{ eval(nombre+'=window["'+nombre+'"]'); }catch(e){}
+  }
+
+  envolver('actualizarCentroMando');
+  envolver('mostrarAsistente');
+  envolver('actualizarPantalla');
+  window.hc1432AplicarGastoCentro = aplicarGastoCentro;
+
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(aplicarGastoCentro,400));
+  window.addEventListener('load',()=>{setTimeout(aplicarGastoCentro,600);setTimeout(aplicarGastoCentro,1800);});
+  setInterval(function(){
+    if(document.getElementById('cmGastoMes')) aplicarGastoCentro();
+  },2500);
+})();
+</script>
