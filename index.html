@@ -5597,23 +5597,15 @@ body.dark #hc10Panel #hc10Log .muted{
 </style>
 
 
-<!-- HomeControl IA PWA -->
-<link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#0f766e">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="HomeControl IA">
-<link rel="apple-touch-icon" href="icon-192.png">
-<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
-<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
-<script>
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
-  });
-}
-</script>
+    <!-- HomeControl IA PWA 14.42 -->
+    <meta name="theme-color" content="#10b981">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="HomeControl IA">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+    <link rel="apple-touch-icon" href="./icon-192.png">
 
 </head>
 <body>
@@ -5678,6 +5670,7 @@ if ('serviceWorker' in navigator) {
         <p class="muted">Configuración, usuarios, calendario y diagnóstico técnico.</p>
         <div class="hc-menu-subgrid">
           <button onclick="hcMenuIr('usuariosPanel')">👥 Usuarios</button>
+          <button onclick="hcMenuIr('backupAdminPanel'); setTimeout(()=>{try{hcCargarBackups()}catch(e){}},200)">💾 Backups</button>
           <button onclick="hcMenuIr('motorConsumoPanel')">🧠 Motor</button>
           <button onclick="hcMenuIr('calendarioPanel')">📅 Calendario</button>
         </div>
@@ -5989,6 +5982,26 @@ if ('serviceWorker' in navigator) {
       <div id="perfilProductoDetalle"></div>
       <h3>📚 Lo que HomeControl ha aprendido</h3>
       <div id="aprendizajesHome"></div>
+    </section>
+
+    <section id="backupAdminPanel" class="card panel oculto">
+      <h2>💾 Backups y restauración</h2>
+      <p class="muted">Área de administración para respaldar y restaurar HomeControl. El respaldo automático se crea solo cada 7 días; el manual lo puedes crear cuando quieras antes de hacer cambios importantes.</p>
+      <div id="homeBackupPanel" class="hc-backup-panel">
+        <div class="resumen">
+          <div class="box">Último automático<strong><span id="hcBackupUltAuto">--</span></strong></div>
+          <div class="box">Último manual<strong><span id="hcBackupUltManual">--</span></strong></div>
+          <div class="box">Respaldos visibles<strong><span id="hcBackupTotal">0</span></strong></div>
+        </div>
+        <div class="hc-backup-actions">
+          <button class="azul" onclick="hcCrearBackupManual()">💾 Crear backup manual</button>
+          <button onclick="hcCargarBackups()">📂 Actualizar lista</button>
+        </div>
+        <div id="hcBackupEstado" class="muted"></div>
+        <h3>📂 Historial de backups</h3>
+        <p class="muted">Cada tarjeta muestra si fue automático o manual, la fecha, los datos guardados, y botones para descargar o restablecer.</p>
+        <div id="hcListaBackups"></div>
+      </div>
     </section>
 
     <section id="usuariosPanel" class="card panel oculto"><h2>👥 Usuarios</h2><p class="muted">Sólo admin puede agregar usuarios.</p><div id="formUsuarios"><div class="grid"><input id="nuevoUsuario" placeholder="Usuario nuevo"><input id="nuevoPassword" placeholder="Contraseña"><input id="nuevoNombre" placeholder="Nombre"><select id="nuevoRol"><option value="editor">Editor</option><option value="admin">Admin</option></select></div><button onclick="runBtn(this, 'Creando usuario, espere servidor...', crearUsuario)">Crear usuario</button></div><div id="listaUsuarios"></div></section>
@@ -24404,254 +24417,17 @@ body.dark #comidaFueraPanel #cfConsejo{
 </script>
 
 
-
-<!-- HomeControl 14.44 - Backup automático semanal y reporte de duración de productos -->
-<style>
-  .hc1444-card{background:linear-gradient(135deg,#ecfeff,#f0fdf4);border:1px solid rgba(20,184,166,.35);border-radius:24px;padding:16px;margin:18px 0;box-shadow:0 12px 35px rgba(15,23,42,.08)}
-  .hc1444-card h3{margin:0 0 10px;font-size:1.35rem;color:#0f172a}
-  .hc1444-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:12px 0}
-  .hc1444-mini{background:rgba(255,255,255,.82);border:1px solid rgba(148,163,184,.35);border-radius:18px;padding:12px;font-weight:800;color:#0f172a}
-  .hc1444-mini span{display:block;color:#64748b;font-weight:700;font-size:.88rem;margin-bottom:4px}
-  .hc1444-controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
-  .hc1444-controls select,.hc1444-controls input{width:100%;padding:14px 16px;border-radius:18px;border:1px solid #cbd5e1;background:white;font-size:16px;color:#0f172a}
-  .hc1444-list{display:grid;gap:12px;margin-top:12px}
-  .hc1444-row{background:white;border:1px solid #dbeafe;border-left:8px solid #14b8a6;border-radius:20px;padding:14px;box-shadow:0 10px 24px rgba(15,23,42,.06)}
-  .hc1444-row b{font-size:1.05rem;color:#0f172a}
-  .hc1444-muted{color:#64748b;font-weight:700;line-height:1.35}
-  .hc1444-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#dcfce7;color:#166534;font-weight:900;margin:4px 4px 0 0}
-  .hc1444-warn{background:#fff7ed;border-color:#fed7aa;border-left-color:#f97316}
-  .hc1444-backup-toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:999999;background:linear-gradient(135deg,#047857,#0891b2);color:white;border-radius:24px;padding:14px 18px;box-shadow:0 18px 45px rgba(0,0,0,.28);font-weight:950;max-width:92vw;text-align:center;display:none}
-  .hc1444-backup-toast small{display:block;font-weight:800;opacity:.9;margin-top:4px}
-  @media(max-width:650px){.hc1444-controls{grid-template-columns:1fr}.hc1444-card{padding:14px;border-radius:22px}.hc1444-row{border-radius:18px}}
-</style>
-<script>
+<script id="homecontrol-pwa-sw-1442">
 (function(){
-  const VERSION_HC1444='14.44';
-  const DAY=86400000;
-  let backupEnCurso=false;
-
-  function arr(name){try{return Array.isArray(window[name])?window[name]:[]}catch(e){return []}}
-  function n(v){const x=Number(v);return Number.isFinite(x)?x:0}
-  function money(v){return (Number(v)||0).toFixed(2)}
-  function norm(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim()}
-  function fechaStr(v){return String(v||'').slice(0,10)}
-  function fechaMs(v){const f=fechaStr(v); if(!f)return null; const d=new Date(f+'T00:00:00'); return isNaN(d)?null:d.getTime()}
-  function hoyISO(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
-  function safeSet(id,html){const el=document.getElementById(id); if(el)el.innerHTML=html}
-  function toast(msg,sub){
-    let el=document.getElementById('hc1444BackupToast');
-    if(!el){el=document.createElement('div');el.id='hc1444BackupToast';el.className='hc1444-backup-toast';document.body.appendChild(el)}
-    el.innerHTML=`${msg}${sub?`<small>${sub}</small>`:''}`;el.style.display='block';return el;
-  }
-  function hideToast(delay=1400){const el=document.getElementById('hc1444BackupToast'); if(el)setTimeout(()=>el.style.display='none',delay)}
-
-  function productoDeCompra(c){
-    const ps=arr('productos');
-    const pid=c.producto_id||c.id_producto||c.productoId;
-    if(pid){const p=ps.find(x=>String(x.id)===String(pid)); if(p)return p;}
-    const cn=norm(c.producto||c.nombre||c.nombre_producto||'');
-    return ps.find(p=>norm(p.nombre)===cn) || null;
-  }
-  function productoDeConsumo(c){
-    const ps=arr('productos');
-    const pid=c.producto_id||c.id_producto||c.productoId;
-    if(pid){const p=ps.find(x=>String(x.id)===String(pid)); if(p)return p;}
-    const cn=norm(c.producto||c.nombre||c.nombre_producto||'');
-    return ps.find(p=>norm(p.nombre)===cn) || null;
-  }
-  function keyProdFromCompra(c){
-    const p=productoDeCompra(c); return p?String(p.id):('nombre:'+norm(c.producto||c.nombre||c.nombre_producto));
-  }
-  function productoNombrePorKey(k){
-    const ps=arr('productos');
-    const p=ps.find(x=>String(x.id)===String(k));
-    if(p)return p.nombre;
-    return String(k||'').replace(/^nombre:/,'Sin nombre');
-  }
-
-  function calcularDuracionProductos(){
-    const compras=arr('compras').filter(c=>fechaMs(c.fecha||c.created_at));
-    const consumos=arr('consumos').filter(c=>fechaMs(c.fecha_consumo||c.fecha||c.created_at));
-    const map={};
-    compras.forEach(c=>{
-      const k=keyProdFromCompra(c); if(!k)return;
-      if(!map[k])map[k]={key:k,nombre:productoNombrePorKey(k),categoria:'',tienda:'',compras:[],consumoCantidad:0,consumoEventos:0,gasto:0};
-      const p=productoDeCompra(c); if(p){map[k].nombre=p.nombre; map[k].categoria=p.categoria||''; map[k].tienda=p.tienda_preferida||'';}
-      map[k].compras.push({fecha:fechaStr(c.fecha||c.created_at),ms:fechaMs(c.fecha||c.created_at),total:n(c.total||c.precio_total||c.importe||c.monto),cantidad:n(c.cantidad||1),tienda:c.tienda||c.tienda_preferida||''});
-      map[k].gasto += n(c.total||c.precio_total||c.importe||c.monto);
-    });
-    consumos.forEach(c=>{
-      const p=productoDeConsumo(c); const k=p?String(p.id):('nombre:'+norm(c.producto||c.nombre||c.nombre_producto));
-      if(!map[k])map[k]={key:k,nombre:p?.nombre||String(c.producto||c.nombre||'Sin nombre'),categoria:p?.categoria||'',tienda:p?.tienda_preferida||'',compras:[],consumoCantidad:0,consumoEventos:0,gasto:0};
-      map[k].consumoCantidad += n(c.cantidad||1);
-      map[k].consumoEventos += 1;
-    });
-    return Object.values(map).map(x=>{
-      x.compras.sort((a,b)=>a.ms-b.ms);
-      const intervalos=[];
-      for(let i=1;i<x.compras.length;i++){
-        const d=Math.round((x.compras[i].ms-x.compras[i-1].ms)/DAY);
-        if(d>=0 && d<730) intervalos.push(d);
-      }
-      x.intervalos=intervalos;
-      x.ultimaDuracion=intervalos.length?intervalos[intervalos.length-1]:null;
-      x.mayorDuracion=intervalos.length?Math.max(...intervalos):null;
-      x.menorDuracion=intervalos.length?Math.min(...intervalos):null;
-      x.promedioDuracion=intervalos.length?intervalos.reduce((a,b)=>a+b,0)/intervalos.length:null;
-      x.ultimaCompra=x.compras.length?x.compras[x.compras.length-1].fecha:'';
-      x.comprasAnalizadas=x.compras.length;
-      return x;
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function(){
+      navigator.serviceWorker.register('./sw.js').catch(function(err){
+        console.log('Service Worker no registrado:', err);
+      });
     });
   }
-
-  function renderDuracionProductos(){
-    const cont=document.getElementById('hc1444DuracionProductos'); if(!cont)return;
-    let datos=calcularDuracionProductos();
-    const q=norm(document.getElementById('hc1444BuscarDuracion')?.value||'');
-    const sort=document.getElementById('hc1444OrdenDuracion')?.value||'uso';
-    const cat=document.getElementById('hc1444FiltroCatDuracion')?.value||'';
-    if(q)datos=datos.filter(x=>norm(x.nombre+' '+x.categoria+' '+x.tienda).includes(q));
-    if(cat)datos=datos.filter(x=>(x.categoria||'Sin categoría')===cat);
-    const sorter={
-      uso:(a,b)=>(b.consumoCantidad-a.consumoCantidad)||(b.consumoEventos-a.consumoEventos)||a.nombre.localeCompare(b.nombre),
-      costoso:(a,b)=>(b.gasto-a.gasto)||a.nombre.localeCompare(b.nombre),
-      alfabetico:(a,b)=>a.nombre.localeCompare(b.nombre),
-      frecuente:(a,b)=>(a.promedioDuracion??99999)-(b.promedioDuracion??99999),
-      duradero:(a,b)=>(b.promedioDuracion??-1)-(a.promedioDuracion??-1),
-      reciente:(a,b)=>String(b.ultimaCompra).localeCompare(String(a.ultimaCompra)),
-      compras:(a,b)=>(b.comprasAnalizadas-a.comprasAnalizadas)||a.nombre.localeCompare(b.nombre)
-    };
-    datos.sort(sorter[sort]||sorter.uso);
-    const top=datos.slice(0,80);
-    cont.innerHTML=top.map(x=>{
-      const sinDatos=x.intervalos.length===0;
-      return `<div class="hc1444-row ${sinDatos?'hc1444-warn':''}">
-        <b>${x.nombre}</b><br>
-        <div class="hc1444-muted">${x.categoria||'Sin categoría'} · ${x.tienda||'Sin tienda'} · Última compra: ${x.ultimaCompra||'sin dato'}</div>
-        <div class="hc1444-grid">
-          <div class="hc1444-mini"><span>Último</span>${x.ultimaDuracion==null?'Sin dato':x.ultimaDuracion+' días'}</div>
-          <div class="hc1444-mini"><span>Mayor</span>${x.mayorDuracion==null?'Sin dato':x.mayorDuracion+' días'}</div>
-          <div class="hc1444-mini"><span>Menor</span>${x.menorDuracion==null?'Sin dato':x.menorDuracion+' días'}</div>
-          <div class="hc1444-mini"><span>Promedio</span>${x.promedioDuracion==null?'Sin dato':x.promedioDuracion.toFixed(1)+' días'}</div>
-        </div>
-        <span class="hc1444-pill">🛒 ${x.comprasAnalizadas} compra(s)</span>
-        <span class="hc1444-pill">🍽️ ${x.consumoCantidad||0} usado</span>
-        <span class="hc1444-pill">💵 $${money(x.gasto)}</span>
-        ${sinDatos?'<div class="hc1444-muted">Necesita al menos 2 compras para calcular duración.</div>':''}
-      </div>`;
-    }).join('') || '<div class="hc1444-row hc1444-warn">No encontré productos con esos filtros.</div>';
-    safeSet('hc1444DuracionResumen',`${datos.length} producto(s) encontrados · ${datos.filter(x=>x.intervalos.length).length} con duración calculada`);
-  }
-
-  function llenarFiltrosDuracion(){
-    const sel=document.getElementById('hc1444FiltroCatDuracion'); if(!sel)return;
-    const cats=[...new Set(calcularDuracionProductos().map(x=>x.categoria||'Sin categoría'))].sort((a,b)=>a.localeCompare(b));
-    const actual=sel.value;
-    sel.innerHTML='<option value="">Todas las categorías</option>'+cats.map(c=>`<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join('');
-    sel.value=actual;
-  }
-
-  function instalarPanelReportes(){
-    const reportes=document.getElementById('reportes'); if(!reportes || document.getElementById('hc1444PanelDuracion'))return;
-    const box=document.createElement('div');
-    box.id='hc1444PanelDuracion';
-    box.className='hc1444-card';
-    box.innerHTML=`
-      <h3>⏳ Duración de productos</h3>
-      <div class="hc1444-muted">Calcula cada cuántos días vuelves a comprar cada producto. Sirve para saber qué se acaba rápido y qué dura más.</div>
-      <div class="hc1444-grid">
-        <div class="hc1444-mini"><span>Último</span>Días entre las 2 compras más recientes</div>
-        <div class="hc1444-mini"><span>Mayor</span>La vez que más duró</div>
-        <div class="hc1444-mini"><span>Menor</span>La vez que menos duró</div>
-        <div class="hc1444-mini"><span>Promedio</span>Duración promedio</div>
-      </div>
-      <div class="hc1444-controls">
-        <input id="hc1444BuscarDuracion" placeholder="🔎 Buscar producto...">
-        <select id="hc1444OrdenDuracion">
-          <option value="uso">Más uso / consumo</option>
-          <option value="costoso">Más costoso</option>
-          <option value="alfabetico">Alfabético</option>
-          <option value="frecuente">Se acaba más rápido</option>
-          <option value="duradero">Más duradero</option>
-          <option value="reciente">Compra más reciente</option>
-          <option value="compras">Más compras registradas</option>
-        </select>
-        <select id="hc1444FiltroCatDuracion"><option value="">Todas las categorías</option></select>
-        <button class="azul" type="button" onclick="hc1444RenderDuracionProductos()">🔄 Actualizar informe</button>
-      </div>
-      <div id="hc1444DuracionResumen" class="hc1444-muted"></div>
-      <div id="hc1444DuracionProductos" class="hc1444-list"></div>`;
-    const ref=document.getElementById('reporteCategorias')?.parentNode===reportes?document.getElementById('reporteCategorias'):null;
-    if(ref && ref.nextSibling) reportes.insertBefore(box,ref.nextSibling); else reportes.appendChild(box);
-    ['hc1444BuscarDuracion','hc1444OrdenDuracion','hc1444FiltroCatDuracion'].forEach(id=>document.getElementById(id)?.addEventListener('input',renderDuracionProductos));
-    llenarFiltrosDuracion(); renderDuracionProductos();
-  }
-  window.hc1444RenderDuracionProductos=function(){llenarFiltrosDuracion();renderDuracionProductos();};
-
-  function backupLigero(full){
-    const limpiarProducto=p=> full? p : Object.fromEntries(Object.entries(p||{}).filter(([k])=>k!=='foto'&&k!=='imagen'&&k!=='image'&&k!=='foto_base64'));
-    return {
-      generado_en:new Date().toISOString(),
-      version_app:VERSION_HC1444,
-      productos:arr('productos').map(limpiarProducto),
-      compras:arr('compras'),
-      consumos:arr('consumos'),
-      categorias:arr('categorias'),
-      gastos_categorias:arr('gastosCategorias'),
-      gastos_hogar:arr('gastosHogar'),
-      pagos_hogar:arr('pagosHogar'),
-      carrito:arr('carritoCompartido').length?arr('carritoCompartido'):arr('carrito'),
-      usuarios:arr('usuarios').map(u=>Object.fromEntries(Object.entries(u||{}).filter(([k])=>!String(k).toLowerCase().includes('password'))))
-    };
-  }
-  async function ultimoBackup(){
-    try{
-      const r=await db.from('home_backups').select('created_at').eq('tipo','semanal').order('created_at',{ascending:false}).limit(1);
-      if(r.error)throw r.error;
-      return r.data&&r.data[0]?r.data[0].created_at:null;
-    }catch(e){return localStorage.getItem('hc1444UltimoBackup')||null;}
-  }
-  async function crearBackupSemanalAuto(){
-    if(backupEnCurso || !window.db)return;
-    backupEnCurso=true;
-    try{
-      const ultimo=await ultimoBackup();
-      if(ultimo && (Date.now()-new Date(ultimo).getTime())<7*DAY){backupEnCurso=false;return;}
-      const el=toast('☁️ Trabajando en backup semanal, espere...','3');
-      for(let i=3;i>=1;i--){el.innerHTML=`☁️ Trabajando en backup semanal, espere...<small>${i}</small>`; await new Promise(r=>setTimeout(r,550));}
-      let datos=backupLigero(true);
-      let item={tipo:'semanal',version_app:VERSION_HC1444,datos,total_productos:arr('productos').length,total_compras:arr('compras').length,total_consumos:arr('consumos').length,total_gastos:arr('gastosHogar').length,creado_por:window.sesion?.usuario||''};
-      let r=await db.from('home_backups').insert(item);
-      if(r.error){
-        datos=backupLigero(false);
-        item={...item,datos,version_app:VERSION_HC1444+' ligero'};
-        r=await db.from('home_backups').insert(item);
-      }
-      if(r.error)throw r.error;
-      localStorage.setItem('hc1444UltimoBackup',new Date().toISOString());
-      toast('✅ Backup semanal guardado','Estamos en línea 😃');
-      hideToast(1800);
-    }catch(e){
-      console.warn('Backup semanal no realizado:',e);
-      toast('⚠️ Backup pendiente','No se pudo guardar en Supabase. HomeControl sigue en línea.');
-      hideToast(2800);
-    }finally{backupEnCurso=false;}
-  }
-
-  const oldActualizar=window.actualizarPantalla;
-  if(typeof oldActualizar==='function'&&!oldActualizar.__hc1444){
-    const nuevo=function(){const r=oldActualizar.apply(this,arguments);setTimeout(()=>{instalarPanelReportes(); if(document.getElementById('reportes')&&!document.getElementById('reportes').classList.contains('oculto')){llenarFiltrosDuracion();renderDuracionProductos();}},80);return r;};
-    nuevo.__hc1444=true; window.actualizarPantalla=nuevo;
-  }
-  const oldCargar=window.cargarTodo;
-  if(typeof oldCargar==='function'&&!oldCargar.__hc1444){
-    const nuevo=async function(){const r=await oldCargar.apply(this,arguments);setTimeout(()=>{instalarPanelReportes();crearBackupSemanalAuto();},600);return r;};
-    nuevo.__hc1444=true; window.cargarTodo=nuevo;
-  }
-  window.addEventListener('load',()=>setTimeout(()=>{instalarPanelReportes();crearBackupSemanalAuto();},1800));
 })();
 </script>
-
 </body>
 
 
@@ -30581,5 +30357,254 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
   }
   document.addEventListener('DOMContentLoaded',()=>setTimeout(pintarSinCategoria,1200));
   window.addEventListener('load',()=>{setTimeout(pintarSinCategoria,1600);setTimeout(pintarSinCategoria,3600)});
+})();
+</script>
+
+<!-- HC 14.39: Comparador integrado con consumo, duración y tienda EN LAS MISMAS TARJETAS -->
+<style id="hc1439-comparador-integrado-css">
+  #comparadorTiendas .hc1439-filtros{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0 14px;padding:12px;border-radius:18px;background:rgba(15,23,42,.06);border:1px solid rgba(148,163,184,.25);position:relative;z-index:30;contain:layout paint;transform:translateZ(0);backface-visibility:hidden}
+  #comparadorTiendas .hc1439-filtros label{font-weight:900;font-size:13px;color:var(--text,#111827);display:block;margin-bottom:5px}
+  #comparadorTiendas .hc1439-filtros select{width:100%;height:46px;min-height:46px;border-radius:14px;padding:9px 38px 9px 12px;font-weight:800;position:relative;z-index:35;background:#fff;appearance:auto;-webkit-appearance:menulist;touch-action:manipulation;transform:none!important;animation:none!important}
+  #comparadorTiendas .hc1439-filtros select:focus{outline:3px solid rgba(14,165,233,.25);outline-offset:2px}
+  #comparadorTiendas .hc1439-mini{grid-column:1/-1;font-size:12px;opacity:.8;margin-top:0}
+  #comparadorTiendas .hc1439-metricas{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0 4px}
+  #comparadorTiendas .hc1439-metrica{border-radius:14px;padding:9px 10px;background:rgba(14,165,233,.08);border:1px solid rgba(14,165,233,.16);font-weight:900;line-height:1.1}
+  #comparadorTiendas .hc1439-metrica small{display:block;font-size:11px;color:#64748b;font-weight:800;margin-bottom:3px}
+  #comparadorTiendas .hc1439-titulo{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap}
+  #comparadorTiendas .hc1439-badge{border-radius:999px;padding:6px 10px;background:#e0f2fe;color:#075985;font-weight:950;font-size:12px;white-space:nowrap}
+  body.dark #comparadorTiendas .hc1439-filtros{background:rgba(15,23,42,.72);border-color:rgba(148,163,184,.28)}
+  body.dark #comparadorTiendas .hc1439-filtros label{color:#f8fafc!important;-webkit-text-fill-color:#f8fafc!important}
+  body.dark #comparadorTiendas .hc1439-filtros select{background:#0f172a;color:#f8fafc;border-color:rgba(148,163,184,.4)}
+  body.dark #comparadorTiendas .hc1439-metrica{background:rgba(30,41,59,.85);border-color:rgba(148,163,184,.25);color:#f8fafc}
+  body.dark #comparadorTiendas .hc1439-metrica small{color:#cbd5e1}
+  @media(max-width:720px){#comparadorTiendas .hc1439-filtros{grid-template-columns:1fr}#comparadorTiendas .hc1439-metricas{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+<script id="hc1439-comparador-integrado">
+(function(){
+  if(window.HC1439_COMPARADOR_INTEGRADO)return;
+  window.HC1439_COMPARADOR_INTEGRADO=true;
+
+  function esc(s){return String(s??'').replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]});}
+  function moneyX(v){try{return (typeof money==='function')?money(v):Number(v||0).toFixed(2)}catch(e){return Number(v||0).toFixed(2)}}
+  function normNombre(n){return String(n||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim()}
+  function normTienda(t){try{if(typeof normalizarTienda==='function')return normalizarTienda(t)}catch(e){} t=(t||'Sin tienda').trim(); const x=t.toLowerCase(); if(x.includes('econom'))return 'Económica'; if(x.includes('smart')||x.includes('s-mart')||x.includes('s mart'))return 'Smart'; if(x.includes('gonz'))return 'González'; return t||'Sin tienda'}
+  function fechaObj(f){if(!f)return null; const s=String(f); let d; if(s.includes('/')){const a=s.split('/'); d=new Date(`${a[2]}-${a[1]}-${a[0]}T00:00:00`);}else d=new Date(s.slice(0,10)+'T00:00:00'); return d&&!isNaN(d)?d:null}
+  function fechaMX(d){return d ? d.toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : 'Sin dato'}
+  function arr(v){return Array.isArray(v)?v:[]}
+  function listaProductos(){try{if(Array.isArray(window.productos))return window.productos}catch(e){} try{if(Array.isArray(productos))return productos}catch(e){} return []}
+  function listaCompras(){try{if(Array.isArray(window.compras))return window.compras}catch(e){} try{if(Array.isArray(compras))return compras}catch(e){} return []}
+  function listaConsumos(){try{if(Array.isArray(window.consumos))return window.consumos}catch(e){} try{if(Array.isArray(consumos))return consumos}catch(e){} return []}
+  function productoDeCompra(c){const ps=listaProductos(); return ps.find(p=>String(p.id)===String(c.producto_id)) || ps.find(p=>normNombre(p.nombre)===normNombre(c.producto));}
+  function categoriaDe(c,p){return String(p?.categoria||c.categoria||'Sin categoría').trim()||'Sin categoría'}
+  function categoriasDisponibles(comprasValidas){const set=new Set(); comprasValidas.forEach(c=>set.add(categoriaDe(c,productoDeCompra(c)))); return Array.from(set).sort((a,b)=>a.localeCompare(b,'es'))}
+  function consumoTotal(p,nombre){const id=String(p?.id||''); const n=normNombre(nombre||p?.nombre); return listaConsumos().filter(c=>(id&&String(c.producto_id)===id)||normNombre(c.producto)===n).reduce((s,c)=>s+Number(c.cantidad||0),0)}
+  function estadisticaDuracion(comprasP){const fechas=comprasP.map(c=>fechaObj(c.fecha||c.fecha_compra||c.created_at||c.fecha_registro)).filter(Boolean).sort((a,b)=>a-b); const ultima=fechas.length?fechas[fechas.length-1]:null; const dif=[]; for(let i=1;i<fechas.length;i++){const d=Math.round((fechas[i]-fechas[i-1])/86400000); if(d>0&&d<370)dif.push(d)} const min=dif.length?Math.min(...dif):null; const max=dif.length?Math.max(...dif):null; const prom=dif.length?Math.round(dif.reduce((s,x)=>s+x,0)/dif.length):null; return {ultima,min,max,prom,registros:fechas.length}}
+  function diasTxt(v){return v===null||v===undefined?'Sin dato':`${v} día${Number(v)===1?'':'s'}`}
+
+  window.hc1439SetComparador=function(campo,valor){
+    if(campo==='cat')window.HC1434_CATEGORIA_COMPARADOR=valor||'';
+    if(campo==='orden')window.HC1439_ORDEN_COMPARADOR=valor||'consumo';
+    // Evita que tiemble el selector: no repintamos TODO Reportes, solo el comparador.
+    setTimeout(()=>{
+      try{
+        const cont=document.getElementById('comparadorTiendas');
+        if(cont) cont.innerHTML=window.comparadorTiendasHTML();
+      }catch(e){}
+    },80);
+  };
+
+  window.comparadorTiendasHTML=function(){
+    const baseTiendas=['Económica','Smart','González'];
+    let comprasValidas=listaCompras().filter(c=>c.producto_id && Number(c.precio||0)>0);
+    if(!comprasValidas.length)return '<p class="muted">Aún no hay historial suficiente para comparar tiendas.</p>';
+    const cats=categoriasDisponibles(comprasValidas);
+    const sel=window.HC1434_CATEGORIA_COMPARADOR||'';
+    const orden=window.HC1439_ORDEN_COMPARADOR||'consumo';
+    const filtros=`<div class="hc1439-filtros"><div><label>🏷 Categoría</label><select onchange="hc1439SetComparador('cat',this.value)"><option value="">Todas las categorías</option>${cats.map(c=>`<option value="${esc(c)}" ${c===sel?'selected':''}>${esc(c)}</option>`).join('')}</select></div><div><label>↕️ Ordenar tarjetas</label><select onchange="hc1439SetComparador('orden',this.value)"><option value="consumo" ${orden==='consumo'?'selected':''}>Mayor consumo</option><option value="barato" ${orden==='barato'?'selected':''}>Más barato / conviene</option><option value="caro" ${orden==='caro'?'selected':''}>Más caro</option><option value="ultima" ${orden==='ultima'?'selected':''}>Última compra reciente</option><option value="duracion_corta" ${orden==='duracion_corta'?'selected':''}>Dura menos días</option><option value="duracion_larga" ${orden==='duracion_larga'?'selected':''}>Dura más días</option><option value="az" ${orden==='az'?'selected':''}>A-Z</option></select></div><div class="hc1439-mini">Ahora el consumo, duración y mejor tienda aparecen juntos en cada tarjeta; no se crea otro grupo aparte.</div></div>`;
+    if(sel)comprasValidas=comprasValidas.filter(c=>categoriaDe(c,productoDeCompra(c))===sel);
+    if(!comprasValidas.length)return filtros+`<p class="muted">No hay compras registradas para la categoría <b>${esc(sel)}</b>.</p>`;
+
+    const porProducto={};
+    comprasValidas.forEach(c=>{const pid=String(c.producto_id); const p=productoDeCompra(c); const nombre=p?.nombre||c.producto||'Producto'; const categoria=categoriaDe(c,p); const tienda=normTienda(c.tienda); if(!porProducto[pid])porProducto[pid]={pid,p,nombre,categoria,tiendas:{},compras:[]}; porProducto[pid].compras.push(c); if(!porProducto[pid].tiendas[tienda])porProducto[pid].tiendas[tienda]=[]; porProducto[pid].tiendas[tienda].push(Number(c.precio||0));});
+
+    let objetos=Object.values(porProducto).map(obj=>{const stats=Object.entries(obj.tiendas).map(([tienda,precios])=>({tienda,prom:precios.reduce((s,x)=>s+x,0)/precios.length,min:Math.min(...precios),veces:precios.length})).sort((a,b)=>a.prom-b.prom); const mejor=stats[0]; const peor=stats[stats.length-1]; const ahorro=stats.length>1?Math.max(0,peor.prom-mejor.prom):0; const dur=estadisticaDuracion(obj.compras); const consumo=consumoTotal(obj.p,obj.nombre); return {...obj,stats,mejor,peor,ahorro,dur,consumo};});
+    objetos.sort((a,b)=>{if(orden==='barato')return (a.mejor?.prom||999999)-(b.mejor?.prom||999999); if(orden==='caro')return (b.peor?.prom||0)-(a.peor?.prom||0); if(orden==='ultima')return (b.dur.ultima?.getTime()||0)-(a.dur.ultima?.getTime()||0); if(orden==='duracion_corta')return (a.dur.prom??999999)-(b.dur.prom??999999); if(orden==='duracion_larga')return (b.dur.prom??-1)-(a.dur.prom??-1); if(orden==='az')return a.nombre.localeCompare(b.nombre,'es'); return (b.consumo||0)-(a.consumo||0) || a.nombre.localeCompare(b.nombre,'es');});
+
+    const filas=objetos.map(obj=>{if(!obj.stats.length)return ''; const chips=baseTiendas.concat(obj.stats.map(x=>x.tienda)).filter((v,i,a)=>a.indexOf(v)===i).map(t=>{const st=obj.stats.find(x=>x.tienda===t); if(!st)return `<span class="pill info">${esc(t)}: sin dato</span>`; const cls=t===obj.mejor.tienda?'ok':'info'; return `<span class="pill ${cls}">${esc(t)}: $${moneyX(st.prom)} prom · min $${moneyX(st.min)}</span>`;}).join(' '); return `<div class="item hc-tienda-card"><div class="hc1439-titulo"><div><b>${esc(obj.nombre)}</b><br><span class="muted">${esc(obj.categoria)}</span></div><span class="hc1439-badge">🔥 Consumo: ${moneyX(obj.consumo)}</span></div><div class="hc-tienda-chips">${chips}</div><div class="hc1439-metricas"><div class="hc1439-metrica"><small>Dura mínimo</small>${diasTxt(obj.dur.min)}</div><div class="hc1439-metrica"><small>Dura máximo</small>${diasTxt(obj.dur.max)}</div><div class="hc1439-metrica"><small>Promedio</small>${diasTxt(obj.dur.prom)}</div><div class="hc1439-metrica"><small>Última compra</small>${esc(fechaMX(obj.dur.ultima))}</div></div><div class="hc-tienda-conviene">🏆 Conviene: ${esc(obj.mejor.tienda)}</div>${obj.ahorro?`<div class="muted hc-tienda-ahorro">Ahorro aprox. $${moneyX(obj.ahorro)} vs la más cara</div>`:''}</div>`;}).filter(Boolean).join('');
+
+    const ranking={}; comprasValidas.forEach(c=>{const t=normTienda(c.tienda); if(!ranking[t])ranking[t]={total:0,items:0}; ranking[t].total+=Number(c.precio||0); ranking[t].items++;});
+    const rank=Object.entries(ranking).map(([tienda,o])=>({tienda,prom:o.total/o.items,items:o.items})).sort((a,b)=>a.prom-b.prom).map((r,i)=>`<div class="item"><b>${i+1}. ${esc(r.tienda)}</b><br><span class="muted">Promedio general por artículo: $${moneyX(r.prom)} · registros: ${r.items}</span></div>`).join('');
+    return filtros+`<h4>Mejor tienda por producto${sel?' · '+esc(sel):''}</h4>${filas||'<p class="muted">Falta más historial por producto.</p>'}<h4>Ranking general de tiendas${sel?' · '+esc(sel):''}</h4>${rank}`;
+  };
+
+  const old=(typeof mostrarReportes==='function')?mostrarReportes:window.mostrarReportes;
+  if(typeof old==='function' && !old.__hc1439){const nuevo=function(){const r=old.apply(this,arguments); try{const cont=document.getElementById('comparadorTiendas'); if(cont)cont.innerHTML=window.comparadorTiendasHTML();}catch(e){} return r}; nuevo.__hc1439=true; try{window.mostrarReportes=nuevo}catch(e){} try{mostrarReportes=nuevo}catch(e){}}
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{try{const cont=document.getElementById('comparadorTiendas'); if(cont)cont.innerHTML=window.comparadorTiendasHTML();}catch(e){}},1200));
+})();
+</script>
+
+
+<style id="hc-backup-css">
+.hc-backup-panel{background:linear-gradient(135deg,#f8fafc,#eef9ff);border:1px solid #cbd5e1;border-radius:22px;padding:16px;margin-top:12px;box-shadow:0 10px 25px rgba(15,23,42,.08)}
+.hc-backup-actions{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 14px}
+.hc-backup-actions button{min-height:46px;border-radius:16px;font-weight:900}
+.hc-backup-card{background:#fff;border-left:8px solid #0ea5e9;border-radius:20px;padding:14px;margin:12px 0;box-shadow:0 8px 20px rgba(15,23,42,.08)}
+.hc-backup-card .danger{background:#ef4444;color:#fff;border:none;border-radius:14px;padding:10px 12px;font-weight:900;margin-top:10px}
+.hc-backup-card .pill{display:inline-block;margin:4px 4px 0 0;padding:6px 10px;border-radius:999px;background:#e0f2fe;color:#075985;font-weight:800;font-size:12px}
+.hc-backup-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px}.hc-backup-actions.mini{margin-top:12px}.hc-backup-actions.mini button{min-height:42px;flex:1}
+</style>
+<script id="hc-backup-semanal-v1">
+(function(){
+  if(window.HC_BACKUP_SEMANAL_V1)return;
+  window.HC_BACKUP_SEMANAL_V1=true;
+  const VERSION_APP_BACKUP='HomeControl_14_42_mejora1_integrada';
+  const TABLAS_RESTAURABLES=[
+    {tabla:'home_gastos_pagos', datos:'pagosHogar'},
+    {tabla:'home_gastos', datos:'gastosHogar'},
+    {tabla:'home_gastos_categorias', datos:'gastosCategorias'},
+    {tabla:'despensa_consumos', datos:'consumos'},
+    {tabla:'despensa_compras', datos:'compras'},
+    {tabla:'despensa_productos', datos:'productos'},
+    {tabla:'despensa_categorias', datos:'categorias'}
+  ];
+  function arrNombre(nombre){try{return Array.isArray(window[nombre])?window[nombre]:[]}catch(e){return []}}
+  function textoEstado(t){const el=document.getElementById('hcBackupEstado'); if(el)el.innerHTML=t;}
+  function limpiarFilas(rows){return (rows||[]).map(r=>{const x={...r}; delete x.home_gastos_categorias; return x;});}
+  function datosBackup(){
+    return {
+      productos:limpiarFilas(arrNombre('productos')),
+      compras:limpiarFilas(arrNombre('compras')),
+      consumos:limpiarFilas(arrNombre('consumos')),
+      usuarios:limpiarFilas(arrNombre('usuarios')),
+      categorias:limpiarFilas(arrNombre('categorias')),
+      gastosCategorias:limpiarFilas(arrNombre('gastosCategorias')),
+      gastosHogar:limpiarFilas(arrNombre('gastosHogar')),
+      pagosHogar:limpiarFilas(arrNombre('pagosHogar')),
+      creado_en:new Date().toISOString()
+    };
+  }
+  async function insertarBackup(tipo){
+    if(typeof db==='undefined'||!db)throw new Error('No hay conexión con Supabase');
+    const datos=datosBackup();
+    const payload={
+      tipo,
+      version_app:VERSION_APP_BACKUP,
+      datos,
+      total_productos:datos.productos.length,
+      total_compras:datos.compras.length,
+      total_consumos:datos.consumos.length,
+      total_gastos:datos.pagosHogar.length,
+      creado_por:(window.sesion?.usuario||window.sesion?.nombre||'usuario')
+    };
+    const r=await db.from('home_backups').insert(payload);
+    if(r.error)throw r.error;
+    return true;
+  }
+  window.hcCrearBackupManual=async function(){
+    try{
+      textoEstado('Creando respaldo...');
+      await insertarBackup('manual');
+      textoEstado('✅ Respaldo manual creado correctamente.');
+      await hcCargarBackups();
+    }catch(e){console.error(e); textoEstado('❌ No se pudo crear el respaldo: '+(e.message||e)); alert('No se pudo crear el respaldo: '+(e.message||e));}
+  };
+  window.hcBackupSemanalAutomatico=async function(){
+    try{
+      if(typeof db==='undefined'||!db)return;
+      const r=await db.from('home_backups').select('id,created_at,tipo').eq('tipo','semanal').order('created_at',{ascending:false}).limit(1);
+      if(r.error)throw r.error;
+      const ultimo=r.data&&r.data[0]?new Date(r.data[0].created_at):null;
+      const ahora=new Date();
+      if(ultimo){
+        const dias=Math.floor((ahora-ultimo)/86400000);
+        if(dias<7){textoEstado(`✅ Respaldo automático activo. Último respaldo semanal hace ${dias} día(s).`);return false;}
+      }
+      await insertarBackup('semanal');
+      textoEstado('✅ Respaldo semanal automático creado hoy.');
+      return true;
+    }catch(e){console.warn('Backup automático no creado',e); textoEstado('⚠️ No se pudo revisar/crear el respaldo automático: '+(e.message||e)); return false;}
+  };
+  window.hcCargarBackups=async function(){
+    const cont=document.getElementById('hcListaBackups'); if(!cont)return;
+    try{
+      cont.innerHTML='<p class="muted">Cargando backups...</p>';
+      const r=await db.from('home_backups').select('id,tipo,version_app,total_productos,total_compras,total_consumos,total_gastos,creado_por,created_at').order('created_at',{ascending:false}).limit(30);
+      if(r.error)throw r.error;
+      const data=r.data||[];
+      const auto=data.find(b=>b.tipo==='semanal');
+      const manual=data.find(b=>b.tipo==='manual');
+      const fmt=x=>x?new Date(x.created_at).toLocaleDateString('es-MX'):'--';
+      if(document.getElementById('hcBackupUltAuto')) hcBackupUltAuto.textContent=fmt(auto);
+      if(document.getElementById('hcBackupUltManual')) hcBackupUltManual.textContent=fmt(manual);
+      if(document.getElementById('hcBackupTotal')) hcBackupTotal.textContent=data.length;
+      cont.innerHTML=data.map(b=>{
+        const tipo=b.tipo==='semanal'?'🗓️ Automático semanal':'💾 Manual';
+        return `<div class="hc-backup-card">
+          <div class="hc-backup-head"><div><b>${tipo}</b><br><span class="muted">Fecha: ${new Date(b.created_at).toLocaleString('es-MX')}</span></div><span class="pill">${b.tipo||'backup'}</span></div>
+          <span class="muted">Versión: ${b.version_app||'sin dato'} · Creado por: ${b.creado_por||'sistema'}</span><br>
+          <span class="pill">Productos: ${b.total_productos||0}</span><span class="pill">Compras: ${b.total_compras||0}</span><span class="pill">Consumos: ${b.total_consumos||0}</span><span class="pill">Gastos: ${b.total_gastos||0}</span>
+          <div class="hc-backup-actions mini"><button onclick="hcDescargarBackup('${b.id}')">⬇️ Descargar</button><button class="danger" onclick="hcRestaurarBackup('${b.id}')">♻️ Restablecer</button></div>
+        </div>`;
+      }).join('') || '<p class="muted">Todavía no hay backups.</p>';
+    }catch(e){console.error(e); cont.innerHTML='<p class="muted">No se pudieron cargar los backups: '+(e.message||e)+'</p>';}
+  };
+  window.hcDescargarBackup=async function(id){
+    try{
+      const r=await db.from('home_backups').select('*').eq('id',id).single();
+      if(r.error)throw r.error;
+      const b=r.data||{};
+      const nombre=`HomeControl_backup_${String(b.tipo||'backup')}_${String(b.created_at||new Date().toISOString()).slice(0,10)}.json`;
+      const blob=new Blob([JSON.stringify(b,null,2)],{type:'application/json'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download=nombre;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},800);
+    }catch(e){console.error(e); alert('No se pudo descargar el backup: '+(e.message||e));}
+  };
+
+  async function borrarTabla(tabla){
+    const r=await db.from(tabla).delete().not('id','is',null);
+    if(r.error)throw new Error(tabla+': '+r.error.message);
+  }
+  async function insertarTabla(tabla,rows){
+    if(!rows||!rows.length)return;
+    const r=await db.from(tabla).insert(rows);
+    if(r.error)throw new Error(tabla+': '+r.error.message);
+  }
+  window.hcRestaurarBackup=async function(id){
+    if(!confirm('¿Seguro que quieres restaurar este respaldo? Se reemplazarán productos, compras, consumos y gastos actuales.'))return;
+    if(!confirm('Última confirmación: antes de restaurar se borran los datos actuales y se cargan los del respaldo.'))return;
+    try{
+      textoEstado('Restaurando respaldo...');
+      const r=await db.from('home_backups').select('*').eq('id',id).single();
+      if(r.error)throw r.error;
+      const d=r.data?.datos||{};
+      // Borrar primero hijos y luego padres.
+      for(const t of TABLAS_RESTAURABLES){await borrarTabla(t.tabla);}
+      // Insertar primero padres y luego movimientos.
+      await insertarTabla('despensa_categorias', d.categorias||[]);
+      await insertarTabla('despensa_productos', d.productos||[]);
+      await insertarTabla('despensa_compras', d.compras||[]);
+      await insertarTabla('despensa_consumos', d.consumos||[]);
+      await insertarTabla('home_gastos_categorias', d.gastosCategorias||[]);
+      await insertarTabla('home_gastos', d.gastosHogar||[]);
+      await insertarTabla('home_gastos_pagos', d.pagosHogar||[]);
+      textoEstado('✅ Respaldo restaurado correctamente. Recargando datos...');
+      if(typeof cargarTodo==='function')await cargarTodo();
+      if(typeof actualizarPantalla==='function')actualizarPantalla();
+      await hcCargarBackups();
+      alert('Respaldo restaurado correctamente ✅');
+    }catch(e){console.error(e); textoEstado('❌ Error al restaurar: '+(e.message||e)); alert('Error al restaurar: '+(e.message||e));}
+  };
+  const oldCargar=(typeof cargarTodo==='function')?cargarTodo:null;
+  if(oldCargar && !oldCargar.__hcBackup){
+    const nuevo=async function(){const r=await oldCargar.apply(this,arguments); setTimeout(()=>{try{hcBackupSemanalAutomatico();}catch(e){}},1200); return r;};
+    nuevo.__hcBackup=true;
+    try{window.cargarTodo=nuevo;}catch(e){}
+    try{cargarTodo=nuevo;}catch(e){}
+  }
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{try{hcBackupSemanalAutomatico(); if(document.getElementById('hcListaBackups'))hcCargarBackups();}catch(e){}},2200));
 })();
 </script>
