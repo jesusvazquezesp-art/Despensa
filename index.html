@@ -24403,6 +24403,255 @@ body.dark #comidaFueraPanel #cfConsejo{
 })();
 </script>
 
+
+
+<!-- HomeControl 14.44 - Backup automático semanal y reporte de duración de productos -->
+<style>
+  .hc1444-card{background:linear-gradient(135deg,#ecfeff,#f0fdf4);border:1px solid rgba(20,184,166,.35);border-radius:24px;padding:16px;margin:18px 0;box-shadow:0 12px 35px rgba(15,23,42,.08)}
+  .hc1444-card h3{margin:0 0 10px;font-size:1.35rem;color:#0f172a}
+  .hc1444-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:12px 0}
+  .hc1444-mini{background:rgba(255,255,255,.82);border:1px solid rgba(148,163,184,.35);border-radius:18px;padding:12px;font-weight:800;color:#0f172a}
+  .hc1444-mini span{display:block;color:#64748b;font-weight:700;font-size:.88rem;margin-bottom:4px}
+  .hc1444-controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+  .hc1444-controls select,.hc1444-controls input{width:100%;padding:14px 16px;border-radius:18px;border:1px solid #cbd5e1;background:white;font-size:16px;color:#0f172a}
+  .hc1444-list{display:grid;gap:12px;margin-top:12px}
+  .hc1444-row{background:white;border:1px solid #dbeafe;border-left:8px solid #14b8a6;border-radius:20px;padding:14px;box-shadow:0 10px 24px rgba(15,23,42,.06)}
+  .hc1444-row b{font-size:1.05rem;color:#0f172a}
+  .hc1444-muted{color:#64748b;font-weight:700;line-height:1.35}
+  .hc1444-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#dcfce7;color:#166534;font-weight:900;margin:4px 4px 0 0}
+  .hc1444-warn{background:#fff7ed;border-color:#fed7aa;border-left-color:#f97316}
+  .hc1444-backup-toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:999999;background:linear-gradient(135deg,#047857,#0891b2);color:white;border-radius:24px;padding:14px 18px;box-shadow:0 18px 45px rgba(0,0,0,.28);font-weight:950;max-width:92vw;text-align:center;display:none}
+  .hc1444-backup-toast small{display:block;font-weight:800;opacity:.9;margin-top:4px}
+  @media(max-width:650px){.hc1444-controls{grid-template-columns:1fr}.hc1444-card{padding:14px;border-radius:22px}.hc1444-row{border-radius:18px}}
+</style>
+<script>
+(function(){
+  const VERSION_HC1444='14.44';
+  const DAY=86400000;
+  let backupEnCurso=false;
+
+  function arr(name){try{return Array.isArray(window[name])?window[name]:[]}catch(e){return []}}
+  function n(v){const x=Number(v);return Number.isFinite(x)?x:0}
+  function money(v){return (Number(v)||0).toFixed(2)}
+  function norm(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim()}
+  function fechaStr(v){return String(v||'').slice(0,10)}
+  function fechaMs(v){const f=fechaStr(v); if(!f)return null; const d=new Date(f+'T00:00:00'); return isNaN(d)?null:d.getTime()}
+  function hoyISO(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+  function safeSet(id,html){const el=document.getElementById(id); if(el)el.innerHTML=html}
+  function toast(msg,sub){
+    let el=document.getElementById('hc1444BackupToast');
+    if(!el){el=document.createElement('div');el.id='hc1444BackupToast';el.className='hc1444-backup-toast';document.body.appendChild(el)}
+    el.innerHTML=`${msg}${sub?`<small>${sub}</small>`:''}`;el.style.display='block';return el;
+  }
+  function hideToast(delay=1400){const el=document.getElementById('hc1444BackupToast'); if(el)setTimeout(()=>el.style.display='none',delay)}
+
+  function productoDeCompra(c){
+    const ps=arr('productos');
+    const pid=c.producto_id||c.id_producto||c.productoId;
+    if(pid){const p=ps.find(x=>String(x.id)===String(pid)); if(p)return p;}
+    const cn=norm(c.producto||c.nombre||c.nombre_producto||'');
+    return ps.find(p=>norm(p.nombre)===cn) || null;
+  }
+  function productoDeConsumo(c){
+    const ps=arr('productos');
+    const pid=c.producto_id||c.id_producto||c.productoId;
+    if(pid){const p=ps.find(x=>String(x.id)===String(pid)); if(p)return p;}
+    const cn=norm(c.producto||c.nombre||c.nombre_producto||'');
+    return ps.find(p=>norm(p.nombre)===cn) || null;
+  }
+  function keyProdFromCompra(c){
+    const p=productoDeCompra(c); return p?String(p.id):('nombre:'+norm(c.producto||c.nombre||c.nombre_producto));
+  }
+  function productoNombrePorKey(k){
+    const ps=arr('productos');
+    const p=ps.find(x=>String(x.id)===String(k));
+    if(p)return p.nombre;
+    return String(k||'').replace(/^nombre:/,'Sin nombre');
+  }
+
+  function calcularDuracionProductos(){
+    const compras=arr('compras').filter(c=>fechaMs(c.fecha||c.created_at));
+    const consumos=arr('consumos').filter(c=>fechaMs(c.fecha_consumo||c.fecha||c.created_at));
+    const map={};
+    compras.forEach(c=>{
+      const k=keyProdFromCompra(c); if(!k)return;
+      if(!map[k])map[k]={key:k,nombre:productoNombrePorKey(k),categoria:'',tienda:'',compras:[],consumoCantidad:0,consumoEventos:0,gasto:0};
+      const p=productoDeCompra(c); if(p){map[k].nombre=p.nombre; map[k].categoria=p.categoria||''; map[k].tienda=p.tienda_preferida||'';}
+      map[k].compras.push({fecha:fechaStr(c.fecha||c.created_at),ms:fechaMs(c.fecha||c.created_at),total:n(c.total||c.precio_total||c.importe||c.monto),cantidad:n(c.cantidad||1),tienda:c.tienda||c.tienda_preferida||''});
+      map[k].gasto += n(c.total||c.precio_total||c.importe||c.monto);
+    });
+    consumos.forEach(c=>{
+      const p=productoDeConsumo(c); const k=p?String(p.id):('nombre:'+norm(c.producto||c.nombre||c.nombre_producto));
+      if(!map[k])map[k]={key:k,nombre:p?.nombre||String(c.producto||c.nombre||'Sin nombre'),categoria:p?.categoria||'',tienda:p?.tienda_preferida||'',compras:[],consumoCantidad:0,consumoEventos:0,gasto:0};
+      map[k].consumoCantidad += n(c.cantidad||1);
+      map[k].consumoEventos += 1;
+    });
+    return Object.values(map).map(x=>{
+      x.compras.sort((a,b)=>a.ms-b.ms);
+      const intervalos=[];
+      for(let i=1;i<x.compras.length;i++){
+        const d=Math.round((x.compras[i].ms-x.compras[i-1].ms)/DAY);
+        if(d>=0 && d<730) intervalos.push(d);
+      }
+      x.intervalos=intervalos;
+      x.ultimaDuracion=intervalos.length?intervalos[intervalos.length-1]:null;
+      x.mayorDuracion=intervalos.length?Math.max(...intervalos):null;
+      x.menorDuracion=intervalos.length?Math.min(...intervalos):null;
+      x.promedioDuracion=intervalos.length?intervalos.reduce((a,b)=>a+b,0)/intervalos.length:null;
+      x.ultimaCompra=x.compras.length?x.compras[x.compras.length-1].fecha:'';
+      x.comprasAnalizadas=x.compras.length;
+      return x;
+    });
+  }
+
+  function renderDuracionProductos(){
+    const cont=document.getElementById('hc1444DuracionProductos'); if(!cont)return;
+    let datos=calcularDuracionProductos();
+    const q=norm(document.getElementById('hc1444BuscarDuracion')?.value||'');
+    const sort=document.getElementById('hc1444OrdenDuracion')?.value||'uso';
+    const cat=document.getElementById('hc1444FiltroCatDuracion')?.value||'';
+    if(q)datos=datos.filter(x=>norm(x.nombre+' '+x.categoria+' '+x.tienda).includes(q));
+    if(cat)datos=datos.filter(x=>(x.categoria||'Sin categoría')===cat);
+    const sorter={
+      uso:(a,b)=>(b.consumoCantidad-a.consumoCantidad)||(b.consumoEventos-a.consumoEventos)||a.nombre.localeCompare(b.nombre),
+      costoso:(a,b)=>(b.gasto-a.gasto)||a.nombre.localeCompare(b.nombre),
+      alfabetico:(a,b)=>a.nombre.localeCompare(b.nombre),
+      frecuente:(a,b)=>(a.promedioDuracion??99999)-(b.promedioDuracion??99999),
+      duradero:(a,b)=>(b.promedioDuracion??-1)-(a.promedioDuracion??-1),
+      reciente:(a,b)=>String(b.ultimaCompra).localeCompare(String(a.ultimaCompra)),
+      compras:(a,b)=>(b.comprasAnalizadas-a.comprasAnalizadas)||a.nombre.localeCompare(b.nombre)
+    };
+    datos.sort(sorter[sort]||sorter.uso);
+    const top=datos.slice(0,80);
+    cont.innerHTML=top.map(x=>{
+      const sinDatos=x.intervalos.length===0;
+      return `<div class="hc1444-row ${sinDatos?'hc1444-warn':''}">
+        <b>${x.nombre}</b><br>
+        <div class="hc1444-muted">${x.categoria||'Sin categoría'} · ${x.tienda||'Sin tienda'} · Última compra: ${x.ultimaCompra||'sin dato'}</div>
+        <div class="hc1444-grid">
+          <div class="hc1444-mini"><span>Último</span>${x.ultimaDuracion==null?'Sin dato':x.ultimaDuracion+' días'}</div>
+          <div class="hc1444-mini"><span>Mayor</span>${x.mayorDuracion==null?'Sin dato':x.mayorDuracion+' días'}</div>
+          <div class="hc1444-mini"><span>Menor</span>${x.menorDuracion==null?'Sin dato':x.menorDuracion+' días'}</div>
+          <div class="hc1444-mini"><span>Promedio</span>${x.promedioDuracion==null?'Sin dato':x.promedioDuracion.toFixed(1)+' días'}</div>
+        </div>
+        <span class="hc1444-pill">🛒 ${x.comprasAnalizadas} compra(s)</span>
+        <span class="hc1444-pill">🍽️ ${x.consumoCantidad||0} usado</span>
+        <span class="hc1444-pill">💵 $${money(x.gasto)}</span>
+        ${sinDatos?'<div class="hc1444-muted">Necesita al menos 2 compras para calcular duración.</div>':''}
+      </div>`;
+    }).join('') || '<div class="hc1444-row hc1444-warn">No encontré productos con esos filtros.</div>';
+    safeSet('hc1444DuracionResumen',`${datos.length} producto(s) encontrados · ${datos.filter(x=>x.intervalos.length).length} con duración calculada`);
+  }
+
+  function llenarFiltrosDuracion(){
+    const sel=document.getElementById('hc1444FiltroCatDuracion'); if(!sel)return;
+    const cats=[...new Set(calcularDuracionProductos().map(x=>x.categoria||'Sin categoría'))].sort((a,b)=>a.localeCompare(b));
+    const actual=sel.value;
+    sel.innerHTML='<option value="">Todas las categorías</option>'+cats.map(c=>`<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join('');
+    sel.value=actual;
+  }
+
+  function instalarPanelReportes(){
+    const reportes=document.getElementById('reportes'); if(!reportes || document.getElementById('hc1444PanelDuracion'))return;
+    const box=document.createElement('div');
+    box.id='hc1444PanelDuracion';
+    box.className='hc1444-card';
+    box.innerHTML=`
+      <h3>⏳ Duración de productos</h3>
+      <div class="hc1444-muted">Calcula cada cuántos días vuelves a comprar cada producto. Sirve para saber qué se acaba rápido y qué dura más.</div>
+      <div class="hc1444-grid">
+        <div class="hc1444-mini"><span>Último</span>Días entre las 2 compras más recientes</div>
+        <div class="hc1444-mini"><span>Mayor</span>La vez que más duró</div>
+        <div class="hc1444-mini"><span>Menor</span>La vez que menos duró</div>
+        <div class="hc1444-mini"><span>Promedio</span>Duración promedio</div>
+      </div>
+      <div class="hc1444-controls">
+        <input id="hc1444BuscarDuracion" placeholder="🔎 Buscar producto...">
+        <select id="hc1444OrdenDuracion">
+          <option value="uso">Más uso / consumo</option>
+          <option value="costoso">Más costoso</option>
+          <option value="alfabetico">Alfabético</option>
+          <option value="frecuente">Se acaba más rápido</option>
+          <option value="duradero">Más duradero</option>
+          <option value="reciente">Compra más reciente</option>
+          <option value="compras">Más compras registradas</option>
+        </select>
+        <select id="hc1444FiltroCatDuracion"><option value="">Todas las categorías</option></select>
+        <button class="azul" type="button" onclick="hc1444RenderDuracionProductos()">🔄 Actualizar informe</button>
+      </div>
+      <div id="hc1444DuracionResumen" class="hc1444-muted"></div>
+      <div id="hc1444DuracionProductos" class="hc1444-list"></div>`;
+    const ref=document.getElementById('reporteCategorias')?.parentNode===reportes?document.getElementById('reporteCategorias'):null;
+    if(ref && ref.nextSibling) reportes.insertBefore(box,ref.nextSibling); else reportes.appendChild(box);
+    ['hc1444BuscarDuracion','hc1444OrdenDuracion','hc1444FiltroCatDuracion'].forEach(id=>document.getElementById(id)?.addEventListener('input',renderDuracionProductos));
+    llenarFiltrosDuracion(); renderDuracionProductos();
+  }
+  window.hc1444RenderDuracionProductos=function(){llenarFiltrosDuracion();renderDuracionProductos();};
+
+  function backupLigero(full){
+    const limpiarProducto=p=> full? p : Object.fromEntries(Object.entries(p||{}).filter(([k])=>k!=='foto'&&k!=='imagen'&&k!=='image'&&k!=='foto_base64'));
+    return {
+      generado_en:new Date().toISOString(),
+      version_app:VERSION_HC1444,
+      productos:arr('productos').map(limpiarProducto),
+      compras:arr('compras'),
+      consumos:arr('consumos'),
+      categorias:arr('categorias'),
+      gastos_categorias:arr('gastosCategorias'),
+      gastos_hogar:arr('gastosHogar'),
+      pagos_hogar:arr('pagosHogar'),
+      carrito:arr('carritoCompartido').length?arr('carritoCompartido'):arr('carrito'),
+      usuarios:arr('usuarios').map(u=>Object.fromEntries(Object.entries(u||{}).filter(([k])=>!String(k).toLowerCase().includes('password'))))
+    };
+  }
+  async function ultimoBackup(){
+    try{
+      const r=await db.from('home_backups').select('created_at').eq('tipo','semanal').order('created_at',{ascending:false}).limit(1);
+      if(r.error)throw r.error;
+      return r.data&&r.data[0]?r.data[0].created_at:null;
+    }catch(e){return localStorage.getItem('hc1444UltimoBackup')||null;}
+  }
+  async function crearBackupSemanalAuto(){
+    if(backupEnCurso || !window.db)return;
+    backupEnCurso=true;
+    try{
+      const ultimo=await ultimoBackup();
+      if(ultimo && (Date.now()-new Date(ultimo).getTime())<7*DAY){backupEnCurso=false;return;}
+      const el=toast('☁️ Trabajando en backup semanal, espere...','3');
+      for(let i=3;i>=1;i--){el.innerHTML=`☁️ Trabajando en backup semanal, espere...<small>${i}</small>`; await new Promise(r=>setTimeout(r,550));}
+      let datos=backupLigero(true);
+      let item={tipo:'semanal',version_app:VERSION_HC1444,datos,total_productos:arr('productos').length,total_compras:arr('compras').length,total_consumos:arr('consumos').length,total_gastos:arr('gastosHogar').length,creado_por:window.sesion?.usuario||''};
+      let r=await db.from('home_backups').insert(item);
+      if(r.error){
+        datos=backupLigero(false);
+        item={...item,datos,version_app:VERSION_HC1444+' ligero'};
+        r=await db.from('home_backups').insert(item);
+      }
+      if(r.error)throw r.error;
+      localStorage.setItem('hc1444UltimoBackup',new Date().toISOString());
+      toast('✅ Backup semanal guardado','Estamos en línea 😃');
+      hideToast(1800);
+    }catch(e){
+      console.warn('Backup semanal no realizado:',e);
+      toast('⚠️ Backup pendiente','No se pudo guardar en Supabase. HomeControl sigue en línea.');
+      hideToast(2800);
+    }finally{backupEnCurso=false;}
+  }
+
+  const oldActualizar=window.actualizarPantalla;
+  if(typeof oldActualizar==='function'&&!oldActualizar.__hc1444){
+    const nuevo=function(){const r=oldActualizar.apply(this,arguments);setTimeout(()=>{instalarPanelReportes(); if(document.getElementById('reportes')&&!document.getElementById('reportes').classList.contains('oculto')){llenarFiltrosDuracion();renderDuracionProductos();}},80);return r;};
+    nuevo.__hc1444=true; window.actualizarPantalla=nuevo;
+  }
+  const oldCargar=window.cargarTodo;
+  if(typeof oldCargar==='function'&&!oldCargar.__hc1444){
+    const nuevo=async function(){const r=await oldCargar.apply(this,arguments);setTimeout(()=>{instalarPanelReportes();crearBackupSemanalAuto();},600);return r;};
+    nuevo.__hc1444=true; window.cargarTodo=nuevo;
+  }
+  window.addEventListener('load',()=>setTimeout(()=>{instalarPanelReportes();crearBackupSemanalAuto();},1800));
+})();
+</script>
+
 </body>
 
 
