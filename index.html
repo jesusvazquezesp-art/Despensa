@@ -29419,3 +29419,94 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
   },2500);
 })();
 </script>
+
+
+<!-- HC 14.33: Corrige Semana actual y agrega tarjeta Desde siempre -->
+<style id="hc1433-semana-siempre-css">
+  #reportes .resumen .hc1433-siempre-box{
+    background:linear-gradient(135deg,rgba(255,255,255,.86),rgba(220,252,231,.84)) !important;
+  }
+</style>
+<script id="hc1433-semana-y-desde-siempre">
+(function(){
+  if(window.HC1433_SEMANA_SIEMPRE)return;
+  window.HC1433_SEMANA_SIEMPRE=true;
+
+  function money1433(n){
+    try{ return (typeof money==='function') ? money(n) : Number(n||0).toFixed(2); }
+    catch(e){ return Number(n||0).toFixed(2); }
+  }
+  function arrCompras(){
+    try{ if(Array.isArray(compras)) return compras; }catch(e){}
+    try{ if(Array.isArray(window.compras)) return window.compras; }catch(e){}
+    return [];
+  }
+  function fechaCompra(c){
+    const raw=c && (c.fecha || c.fecha_compra || c.created_at || c.fecha_creacion || c.actualizado);
+    if(!raw)return null;
+    const s=String(raw);
+    const f=s.includes('T') ? new Date(s) : new Date(s.slice(0,10)+'T00:00:00');
+    return isNaN(f) ? null : f;
+  }
+  function totalCompra(c){
+    const directo=Number(c && (c.total ?? c.monto ?? c.importe));
+    if(!isNaN(directo) && directo>0)return directo;
+    const cant=Number(c && (c.cantidad ?? 0));
+    const precio=Number(c && (c.precio ?? c.precio_unitario ?? c.precio_compra ?? 0));
+    return (cant>0 && precio>0) ? cant*precio : 0;
+  }
+  function semanaKeyLocal(fecha){
+    const f=new Date(fecha); f.setHours(0,0,0,0);
+    try{ if(typeof semanaKey==='function') return semanaKey(f.toISOString().slice(0,10)); }catch(e){}
+    // Fallback ISO: lunes como inicio de semana.
+    const d=new Date(Date.UTC(f.getFullYear(), f.getMonth(), f.getDate()));
+    const day=d.getUTCDay()||7;
+    d.setUTCDate(d.getUTCDate()+4-day);
+    const yearStart=new Date(Date.UTC(d.getUTCFullYear(),0,1));
+    const week=Math.ceil((((d-yearStart)/86400000)+1)/7);
+    return d.getUTCFullYear()+'-Semana '+String(week).padStart(2,'0');
+  }
+  function asegurarTarjetaSiempre(){
+    const resumen=document.querySelector('#reportes .resumen');
+    if(!resumen)return;
+    let span=document.getElementById('gastoSiempre');
+    if(span)return;
+    const box=document.createElement('div');
+    box.className='box hc1433-siempre-box';
+    box.innerHTML='Desde siempre<strong>$<span id="gastoSiempre">0</span></strong>';
+    resumen.appendChild(box);
+  }
+  function corregirTarjetasReporte(){
+    asegurarTarjetaSiempre();
+    const lista=arrCompras();
+    const ahora=new Date();
+    const keyHoy=semanaKeyLocal(ahora);
+    const totalSemana=lista.reduce((s,c)=>{
+      const f=fechaCompra(c); if(!f)return s;
+      return semanaKeyLocal(f)===keyHoy ? s+totalCompra(c) : s;
+    },0);
+    const totalSiempre=lista.reduce((s,c)=>s+totalCompra(c),0);
+    const gs=document.getElementById('gastoSemana');
+    const gsi=document.getElementById('gastoSiempre');
+    if(gs)gs.textContent=money1433(totalSemana);
+    if(gsi)gsi.textContent=money1433(totalSiempre);
+  }
+
+  const original=(typeof mostrarReportes==='function') ? mostrarReportes : window.mostrarReportes;
+  if(typeof original==='function' && !original.__hc1433){
+    const nuevo=function(){
+      const r=original.apply(this,arguments);
+      try{corregirTarjetasReporte();}catch(e){console.warn('HC14.33 reporte:',e)}
+      setTimeout(()=>{try{corregirTarjetasReporte();}catch(e){}},60);
+      return r;
+    };
+    nuevo.__hc1433=true;
+    try{window.mostrarReportes=nuevo;}catch(e){}
+    try{mostrarReportes=nuevo;}catch(e){}
+  }
+  window.hc1433CorregirTarjetasReporte=corregirTarjetasReporte;
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(corregirTarjetasReporte,900));
+  window.addEventListener('load',()=>{setTimeout(corregirTarjetasReporte,1200);setTimeout(corregirTarjetasReporte,3200)});
+  setInterval(()=>{try{if((typeof panelActual!=='undefined'&&panelActual==='reportes')||document.querySelector('#reportes:not(.oculto)'))corregirTarjetasReporte();}catch(e){}},3500);
+})();
+</script>
