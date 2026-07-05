@@ -23756,6 +23756,634 @@ body.dark #comidaFueraPanel #cfConsejo{
 })();
 </script>
 
+
+
+<!-- HC 14.34: Filtro por categoría SOLO en Reportes > Comparador de tiendas -->
+<style id="hc1434-comparador-categoria-css">
+  .hc1434-cat-filter{
+    display:grid;
+    grid-template-columns:1fr;
+    gap:8px;
+    margin:10px 0 14px;
+    padding:12px;
+    border-radius:18px;
+    background:rgba(15,23,42,.06);
+    border:1px solid rgba(148,163,184,.25);
+  }
+  .hc1434-cat-filter label{font-weight:900;font-size:14px;color:var(--text,#111827)}
+  .hc1434-cat-filter select{
+    width:100%;
+    min-height:44px;
+    border-radius:14px;
+    padding:9px 12px;
+    font-weight:800;
+  }
+  .hc1434-cat-mini{font-size:12px;opacity:.8;margin-top:2px}
+</style>
+<script id="hc1434-comparador-categoria">
+(function(){
+  if(window.HC1434_COMPARADOR_CATEGORIA)return;
+  window.HC1434_COMPARADOR_CATEGORIA=true;
+
+  function esc(s){
+    return String(s??'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]});
+  }
+  function moneyOk(v){
+    try{return (typeof money==='function')?money(v):Number(v||0).toFixed(2)}catch(e){return Number(v||0).toFixed(2)}
+  }
+  function normTienda(t){
+    try{if(typeof normalizarTienda==='function')return normalizarTienda(t)}catch(e){}
+    t=(t||'Sin tienda').trim();
+    const x=t.toLowerCase();
+    if(x.includes('econom'))return 'Económica';
+    if(x.includes('smart')||x.includes('s-mart')||x.includes('s mart'))return 'Smart';
+    if(x.includes('gonz'))return 'González';
+    return t||'Sin tienda';
+  }
+  function arr(x){return Array.isArray(x)?x:[]}
+  function listaProductos(){
+    try{if(Array.isArray(window.productos))return window.productos}catch(e){}
+    try{if(Array.isArray(productos))return productos}catch(e){}
+    return [];
+  }
+  function listaCompras(){
+    try{if(Array.isArray(window.compras))return window.compras}catch(e){}
+    try{if(Array.isArray(compras))return compras}catch(e){}
+    return [];
+  }
+  function categoriaProducto(pid,nombre){
+    const ps=listaProductos();
+    const p=ps.find(x=>String(x.id)===String(pid)) || ps.find(x=>String(x.nombre||'').toLowerCase()===String(nombre||'').toLowerCase());
+    return (p?.categoria||'Sin categoría').trim() || 'Sin categoría';
+  }
+  function categoriasDisponibles(comprasValidas){
+    const set=new Set();
+    comprasValidas.forEach(c=>set.add(categoriaProducto(c.producto_id,c.producto)));
+    return Array.from(set).sort((a,b)=>a.localeCompare(b,'es'));
+  }
+  window.hc1434SetCategoriaComparador=function(v){
+    window.HC1434_CATEGORIA_COMPARADOR=v||'';
+    try{ if(typeof mostrarReportes==='function') mostrarReportes(); }catch(e){
+      try{ const cont=document.getElementById('comparadorTiendas'); if(cont)cont.innerHTML=window.comparadorTiendasHTML(); }catch(x){}
+    }
+  };
+
+  window.comparadorTiendasHTML=function(){
+    const baseTiendas=['Económica','Smart','González'];
+    let comprasValidas=listaCompras().filter(c=>c.producto_id && Number(c.precio||0)>0);
+    if(!comprasValidas.length)return '<p class="muted">Aún no hay historial suficiente para comparar tiendas.</p>';
+
+    const cats=categoriasDisponibles(comprasValidas);
+    const sel=window.HC1434_CATEGORIA_COMPARADOR||'';
+    const filtroHTML=`<div class="hc1434-cat-filter">
+      <label>🏷 Filtrar comparador por categoría</label>
+      <select id="hc1434FiltroCategoriaComparador" onchange="hc1434SetCategoriaComparador(this.value)">
+        <option value="">Todas las categorías</option>
+        ${cats.map(c=>`<option value="${esc(c)}" ${c===sel?'selected':''}>${esc(c)}</option>`).join('')}
+      </select>
+      <div class="hc1434-cat-mini">Este filtro solo afecta el comparador de tiendas; no toca Inventario.</div>
+    </div>`;
+
+    if(sel){
+      comprasValidas=comprasValidas.filter(c=>categoriaProducto(c.producto_id,c.producto)===sel);
+    }
+    if(!comprasValidas.length){
+      return filtroHTML+`<p class="muted">No hay compras registradas para la categoría <b>${esc(sel)}</b>.</p>`;
+    }
+
+    const porProducto={};
+    comprasValidas.forEach(c=>{
+      const pid=String(c.producto_id);
+      const prod=listaProductos().find(p=>String(p.id)===pid);
+      const nombre=prod?.nombre||c.producto||'Producto';
+      const categoria=categoriaProducto(pid,nombre);
+      const tienda=normTienda(c.tienda);
+      if(!porProducto[pid])porProducto[pid]={nombre,categoria,tiendas:{}};
+      if(!porProducto[pid].tiendas[tienda])porProducto[pid].tiendas[tienda]=[];
+      porProducto[pid].tiendas[tienda].push(Number(c.precio||0));
+    });
+
+    const filas=Object.values(porProducto).sort((a,b)=>a.nombre.localeCompare(b.nombre,'es')).map(obj=>{
+      const stats=Object.entries(obj.tiendas).map(([tienda,precios])=>({
+        tienda,
+        prom:precios.reduce((s,x)=>s+x,0)/precios.length,
+        min:Math.min(...precios),
+        veces:precios.length
+      })).sort((a,b)=>a.prom-b.prom);
+      if(!stats.length)return '';
+      const mejor=stats[0];
+      const peor=stats[stats.length-1];
+      const ahorro=stats.length>1 ? Math.max(0, peor.prom-mejor.prom) : 0;
+      const chips=baseTiendas.concat(stats.map(x=>x.tienda)).filter((v,i,a)=>a.indexOf(v)===i).map(t=>{
+        const st=stats.find(x=>x.tienda===t);
+        if(!st)return `<span class="pill info">${esc(t)}: sin dato</span>`;
+        const cls=t===mejor.tienda?'ok':'info';
+        return `<span class="pill ${cls}">${esc(t)}: $${moneyOk(st.prom)} prom · min $${moneyOk(st.min)}</span>`;
+      }).join(' ');
+      return `<div class="item hc-tienda-card"><b>${esc(obj.nombre)}</b><br><span class="muted">${esc(obj.categoria)}</span><div class="hc-tienda-chips">${chips}</div><div class="hc-tienda-conviene">🏆 Conviene: ${esc(mejor.tienda)}</div>${ahorro?`<div class="muted hc-tienda-ahorro">Ahorro aprox. $${moneyOk(ahorro)} vs la más cara</div>`:''}</div>`;
+    }).filter(Boolean).join('');
+
+    const ranking={};
+    comprasValidas.forEach(c=>{
+      const t=normTienda(c.tienda);
+      if(!ranking[t])ranking[t]={total:0,items:0};
+      ranking[t].total+=Number(c.precio||0);
+      ranking[t].items++;
+    });
+    const rank=Object.entries(ranking)
+      .map(([tienda,o])=>({tienda,prom:o.total/o.items,items:o.items}))
+      .sort((a,b)=>a.prom-b.prom)
+      .map((r,i)=>`<div class="item"><b>${i+1}. ${esc(r.tienda)}</b><br><span class="muted">Promedio general por artículo: $${moneyOk(r.prom)} · registros: ${r.items}</span></div>`).join('');
+
+    return filtroHTML+`<h4>Mejor tienda por producto${sel?' · '+esc(sel):''}</h4>${filas||'<p class="muted">Falta más historial por producto.</p>'}<h4>Ranking general de tiendas${sel?' · '+esc(sel):''}</h4>${rank}`;
+  };
+
+  try{
+    const cont=document.getElementById('comparadorTiendas');
+    if(cont)cont.innerHTML=window.comparadorTiendasHTML();
+  }catch(e){}
+})();
+</script>
+
+
+
+<!-- HC 14.37: Reparador inteligente de compras sin categoria/producto_id -->
+<style id="hc1437-reparador-css">
+#hc1437Box{margin:18px 0;padding:16px;border-radius:22px;background:linear-gradient(135deg,rgba(255,251,235,.96),rgba(239,246,255,.96));border:1px solid rgba(251,146,60,.45);box-shadow:0 12px 30px rgba(15,23,42,.10)}
+#hc1437Box h3{margin:0 0 8px;font-size:24px;color:#7c2d12}
+#hc1437Box .hc1437-sub{color:#64748b;font-weight:800;margin:0 0 12px;line-height:1.25}
+#hc1437Box .hc1437-total{background:#fff7ed;border:1px solid #fdba74;border-radius:18px;padding:12px 14px;font-weight:1000;color:#9a3412;margin:10px 0 14px;font-size:18px}
+.hc1437-card{background:white;border:1px solid rgba(148,163,184,.35);border-radius:20px;padding:14px;margin:12px 0;box-shadow:0 8px 22px rgba(15,23,42,.10)}
+.hc1437-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.hc1437-name{font-size:22px;font-weight:1000;color:#0f172a;line-height:1.05}
+.hc1437-money{font-size:22px;font-weight:1000;color:#0f172a;white-space:nowrap}
+.hc1437-meta{color:#64748b;font-weight:850;margin:7px 0 10px;line-height:1.25}
+.hc1437-row{display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px}
+.hc1437-card select{width:100%;font-size:16px;padding:12px;border-radius:15px;border:1px solid #cbd5e1;background:#f8fafc;color:#0f172a}
+.hc1437-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.hc1437-actions button,#hc1437Box button{border:0;border-radius:16px;padding:12px 14px;font-weight:1000;color:white;background:linear-gradient(135deg,#0ea5e9,#22c55e);box-shadow:0 8px 20px rgba(15,23,42,.16)}
+.hc1437-actions button.sec{background:linear-gradient(135deg,#64748b,#334155)}
+.hc1437-actions button.warn{background:linear-gradient(135deg,#f97316,#ec4899)}
+.hc1437-ok{padding:12px;border-radius:16px;background:#dcfce7;color:#166534;font-weight:1000;border:1px solid #86efac}
+.hc1437-small{font-size:12px;color:#64748b;font-weight:800;margin-top:7px}
+@media(max-width:640px){.hc1437-head{display:block}.hc1437-money{margin-top:6px}.hc1437-actions{grid-template-columns:1fr}.hc1437-name{font-size:20px}}
+</style>
+<script id="hc1437-reparador-sin-categoria">
+(function(){
+  if(window.HC1437_REPARADOR_SIN_CATEGORIA)return;
+  window.HC1437_REPARADOR_SIN_CATEGORIA=true;
+  const TAB_COMPRAS='despensa_compras';
+  function arr(x){return Array.isArray(x)?x:[]}
+  function esc(s){return String(s??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]))}
+  function moneyX(v){try{return (typeof money==='function')?money(v):Number(v||0).toFixed(2)}catch(e){return Number(v||0).toFixed(2)}}
+  function norm(s){try{if(typeof normalizarProductoNombre==='function')return normalizarProductoNombre(s)}catch(e){} return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim()}
+  function dbx(){try{if(typeof db!=='undefined'&&db)return db}catch(e){} return window.db||null}
+  function getProductos(){try{if(Array.isArray(productos))return productos}catch(e){} return arr(window.productos)}
+  function getCompras(){try{if(Array.isArray(compras))return compras}catch(e){} return arr(window.compras)}
+  function setCompras(a){try{compras=a}catch(e){} try{window.compras=a}catch(e){}}
+  function prodPorId(id){id=String(id||''); if(!id)return null; return getProductos().find(p=>String(p.id)===id)||null}
+  function prodPorNombre(nombre){const n=norm(nombre); if(!n)return null; return getProductos().find(p=>norm(p.nombre)===n)||null}
+  function categoriaResuelta(c){
+    if(c && c.categoria && String(c.categoria).trim())return String(c.categoria).trim();
+    const p1=prodPorId(c?.producto_id); if(p1?.categoria)return String(p1.categoria).trim();
+    const p2=prodPorNombre(c?.producto||c?.nombre); if(p2?.categoria)return String(p2.categoria).trim();
+    return 'Sin categoría';
+  }
+  function pendientes(){
+    return getCompras().filter(c=>categoriaResuelta(c)==='Sin categoría').map((c,i)=>Object.assign({_hc_idx:i},c));
+  }
+  function scoreProducto(c,p){
+    const a=norm(c.producto||c.nombre), b=norm(p.nombre); if(!a||!b)return 0;
+    if(a===b)return 100;
+    if(a.includes(b)||b.includes(a))return 86;
+    const ta=a.split(' ').filter(Boolean), tb=b.split(' ').filter(Boolean);
+    const hit=ta.filter(x=>tb.includes(x)).length;
+    return Math.round((hit/Math.max(ta.length,tb.length,1))*75);
+  }
+  function sugerencias(c){
+    return getProductos().map(p=>({p,score:scoreProducto(c,p)})).filter(x=>x.score>=25 || norm(x.p.nombre).includes(norm(c.producto||c.nombre))).sort((a,b)=>b.score-a.score || String(a.p.nombre).localeCompare(String(b.p.nombre))).slice(0,8);
+  }
+  function compraKey(c){return String(c.id||c.compra_id||c._hc_idx||'')}
+  function buscarCompraPorKey(k){return pendientes().find(c=>compraKey(c)===String(k)) || getCompras().find(c=>String(c.id||c.compra_id||c._hc_idx||'')===String(k))}
+  async function actualizarCompra(c, prod){
+    const cli=dbx(); if(!cli)throw new Error('No hay conexión con Supabase.');
+    const payload={producto_id:prod.id};
+    // Si la tabla tiene columna categoria, también queda reparada; si no existe, caemos a producto_id.
+    const payloadConCategoria={producto_id:prod.id,categoria:prod.categoria||null};
+    async function runUpdate(payloadTry){
+      if(c.id){return await cli.from(TAB_COMPRAS).update(payloadTry).eq('id',c.id)}
+      let q=cli.from(TAB_COMPRAS).update(payloadTry);
+      if(c.producto)q=q.eq('producto',c.producto);
+      if(c.fecha)q=q.eq('fecha',c.fecha);
+      if(c.total!==undefined&&c.total!==null)q=q.eq('total',Number(c.total||0));
+      return await q;
+    }
+    let r=await runUpdate(payloadConCategoria);
+    if(r.error){
+      const msg=String(r.error.message||'');
+      if(/categoria|column|schema cache/i.test(msg))r=await runUpdate(payload);
+    }
+    if(r.error)throw r.error;
+    const lista=getCompras().slice();
+    lista.forEach(x=>{
+      const mismo=(c.id&&x.id&&String(x.id)===String(c.id)) || (!c.id && norm(x.producto||x.nombre)===norm(c.producto||c.nombre) && String(x.fecha||'')===String(c.fecha||'') && Number(x.total||0)===Number(c.total||0));
+      if(mismo){x.producto_id=prod.id; if(prod.categoria)x.categoria=prod.categoria;}
+    });
+    setCompras(lista);
+    return true;
+  }
+  async function repararUno(k){
+    try{
+      const c=buscarCompraPorKey(k); if(!c)return alert('No encontré esa compra. Actualiza reportes e intenta de nuevo.');
+      const sel=document.getElementById('hc1437sel_'+String(k)) || document.querySelector('[data-hc1437-key="'+String(k).replace(/\"/g,'&quot;')+'"]');
+      const pid=(sel&&sel.value)?String(sel.value):'';
+      if(!pid)return alert('Selecciona el producto correcto.');
+      const p=prodPorId(pid); if(!p)return alert('No encontré el producto elegido.');
+      const opcion=sel.selectedOptions&&sel.selectedOptions[0]?sel.selectedOptions[0].textContent:p.nombre;
+      if(!confirm('¿Vincular exactamente esta compra?\n\nHistórico: '+(c.producto||c.nombre)+'\nProducto elegido: '+p.nombre+'\nCategoría: '+(p.categoria||'Sin categoría')+'\n\nSe usará el producto que tú elegiste.'))return;
+      await actualizarCompra(c,p);
+      pintar();
+      try{if(typeof mostrarReportes==='function')mostrarReportes()}catch(e){}
+      alert('✅ Compra reparada.');
+    }catch(e){alert('No pude reparar: '+(e?.message||e))}
+  }
+  async function repararExactos(){
+    try{
+      const list=pendientes().filter(c=>prodPorNombre(c.producto||c.nombre));
+      if(!list.length)return alert('No encontré coincidencias exactas automáticas.');
+      if(!confirm('Reparar automáticamente '+list.length+' compra(s) con coincidencia exacta?'))return;
+      for(const c of list){await actualizarCompra(c,prodPorNombre(c.producto||c.nombre));}
+      pintar(); try{if(typeof mostrarReportes==='function')mostrarReportes()}catch(e){}
+      alert('✅ Reparación automática lista.');
+    }catch(e){alert('No pude reparar todo: '+(e?.message||e))}
+  }
+  function asegurarCaja(){
+    let box=document.getElementById('hc1437Box'); if(box)return box;
+    const ref=document.getElementById('hc1436Box')||document.getElementById('reporteCategorias')||document.getElementById('reportes');
+    box=document.createElement('div'); box.id='hc1437Box';
+    if(ref && ref.parentNode){ref.insertAdjacentElement(ref.id==='reporteCategorias'?'afterend':'afterend',box)}
+    else document.body.appendChild(box);
+    return box;
+  }
+  function pintar(){
+    const box=asegurarCaja();
+    const list=pendientes();
+    if(!list.length){box.innerHTML='<h3>🔧 Reparador inteligente</h3><div class="hc1437-ok">✅ No hay compras sin categoría por reparar.</div>';return;}
+    const total=list.reduce((s,c)=>s+Number(c.total||0),0);
+    const exactos=list.filter(c=>prodPorNombre(c.producto||c.nombre)).length;
+    const rows=list.map(c=>{
+      const k=compraKey(c), sug=sugerencias(c), exact=prodPorNombre(c.producto||c.nombre);
+      const opts=['<option value="">Seleccionar producto actual...</option>'].concat(sug.map(x=>`<option value="${esc(x.p.id)}" ${exact&&String(exact.id)===String(x.p.id)?'selected':''}>${x.score>=100?'✅ ':x.score>=80?'🤖 ':''}${esc(x.p.nombre)} · ${esc(x.p.categoria||'Sin categoría')} · ${esc(x.p.tienda_preferida||'Sin tienda')}</option>`)).join('');
+      return `<div class="hc1437-card"><div class="hc1437-head"><div><div class="hc1437-name">${esc(c.producto||c.nombre||'Producto')}</div><div class="hc1437-meta">📅 ${esc(c.fecha||'Sin fecha')} · 🏪 ${esc(c.tienda||'Sin tienda')} · Cantidad: ${esc(c.cantidad||0)}<br>🔎 ${c.producto_id?'Tiene producto_id, pero no pude resolver categoría':'Sin producto_id; solo quedó nombre histórico'}</div></div><div class="hc1437-money">$${moneyX(c.total)}</div></div><div class="hc1437-row"><select id="hc1437sel_${esc(k)}" data-hc1437-key="${esc(k)}" onchange="this.dataset.elegido=this.value">${opts}</select></div><div class="hc1437-actions"><button onclick="hc1437RepararUno('${esc(k)}')">✅ Vincular compra</button><button class="sec" onclick="const s=document.getElementById('hc1437sel_${esc(k)}'); if(s){s.value=''; s.dataset.elegido='';}">Limpiar selección</button></div><div class="hc1437-small">${sug.length?'Elige el producto correcto del inventario.':'No encontré coincidencias; quizá el producto fue eliminado o cambió mucho de nombre.'}</div></div>`;
+    }).join('');
+    box.innerHTML=`<h3>🔧 Reparador inteligente</h3><div class="hc1437-sub">Vincula compras antiguas con productos actuales para que tomen su categoría y desaparezcan de <b>Sin categoría</b>.</div><div class="hc1437-total">Pendiente: $${moneyX(total)} · ${list.length} registro(s) · ${exactos} coincidencia(s) exacta(s)</div><div class="hc1437-actions" style="margin-bottom:12px"><button class="warn" onclick="hc1437RepararExactos()">✨ Reparar coincidencias exactas</button><button class="sec" onclick="hc1437Pintar()">🔄 Revisar otra vez</button></div>${rows}`;
+  }
+  window.hc1437Pintar=pintar;
+  window.hc1437RepararUno=repararUno;
+  window.hc1437RepararExactos=repararExactos;
+  const old=window.mostrarReportes;
+  if(typeof old==='function'&&!old.__hc1437){
+    window.mostrarReportes=function(){const r=old.apply(this,arguments); setTimeout(pintar,80); return r};
+    window.mostrarReportes.__hc1437=true; try{mostrarReportes=window.mostrarReportes}catch(e){}
+  }
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(pintar,1500));
+  window.addEventListener('load',()=>setTimeout(pintar,1200));
+})();
+</script>
+
+
+<!-- HC 14.38: Reparador - usar exactamente el producto elegido por el usuario -->
+<script id="hc1438-reparador-eleccion-directa">
+(function(){
+  if(window.HC1438_REPARADOR_ELECCION_DIRECTA)return;
+  window.HC1438_REPARADOR_ELECCION_DIRECTA=true;
+  const TAB_COMPRAS='despensa_compras';
+  function arr(x){return Array.isArray(x)?x:[]}
+  function norm(s){try{if(typeof normalizarProductoNombre==='function')return normalizarProductoNombre(s)}catch(e){} return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim()}
+  function dbx(){try{if(typeof db!=='undefined'&&db)return db}catch(e){} return window.db||null}
+  function getProductos(){try{if(Array.isArray(productos))return productos}catch(e){} return arr(window.productos)}
+  function getCompras(){try{if(Array.isArray(compras))return compras}catch(e){} return arr(window.compras)}
+  function setCompras(a){try{compras=a}catch(e){} try{window.compras=a}catch(e){}}
+  function prodPorId(id){id=String(id||''); return getProductos().find(p=>String(p.id)===id)||null}
+  function prodPorNombre(nombre){const n=norm(nombre); return getProductos().find(p=>norm(p.nombre)===n)||null}
+  function categoriaResuelta(c){
+    if(c&&c.categoria&&String(c.categoria).trim())return String(c.categoria).trim();
+    const p1=prodPorId(c&&c.producto_id); if(p1&&p1.categoria)return String(p1.categoria).trim();
+    const p2=prodPorNombre((c&&c.producto)||(c&&c.nombre)); if(p2&&p2.categoria)return String(p2.categoria).trim();
+    return 'Sin categoría';
+  }
+  function pendientes(){return getCompras().filter(c=>categoriaResuelta(c)==='Sin categoría').map((c,i)=>Object.assign({_hc_idx:i},c));}
+  function compraKey(c){return String(c.id||c.compra_id||c._hc_idx||'')}
+  function buscarCompraPorKey(k){return pendientes().find(c=>compraKey(c)===String(k)) || getCompras().find(c=>String(c.id||c.compra_id||c._hc_idx||'')===String(k))}
+  function selByKey(k){return document.getElementById('hc1437sel_'+String(k)) || document.querySelector('[data-hc1437-key="'+String(k).replace(/"/g,'\\"')+'"]')}
+  async function actualizarCompra(c,prod){
+    const cli=dbx(); if(!cli)throw new Error('No hay conexión con Supabase.');
+    const payloadCat={producto_id:prod.id,categoria:prod.categoria||null};
+    const payload={producto_id:prod.id};
+    async function runUpdate(pl){
+      if(c.id)return await cli.from(TAB_COMPRAS).update(pl).eq('id',c.id);
+      let q=cli.from(TAB_COMPRAS).update(pl);
+      if(c.producto)q=q.eq('producto',c.producto);
+      if(c.fecha)q=q.eq('fecha',c.fecha);
+      if(c.total!==undefined&&c.total!==null)q=q.eq('total',Number(c.total||0));
+      return await q;
+    }
+    let r=await runUpdate(payloadCat);
+    if(r.error && /categoria|column|schema cache/i.test(String(r.error.message||'')))r=await runUpdate(payload);
+    if(r.error)throw r.error;
+    const lista=getCompras().slice();
+    lista.forEach(x=>{
+      const mismo=(c.id&&x.id&&String(x.id)===String(c.id)) || (!c.id && norm(x.producto||x.nombre)===norm(c.producto||c.nombre) && String(x.fecha||'')===String(c.fecha||'') && Number(x.total||0)===Number(c.total||0));
+      if(mismo){x.producto_id=prod.id; if(prod.categoria)x.categoria=prod.categoria;}
+    });
+    setCompras(lista);
+  }
+  window.hc1437RepararUno=async function(k){
+    try{
+      const c=buscarCompraPorKey(k); if(!c)return alert('No encontré esa compra. Presiona Revisar otra vez.');
+      const sel=selByKey(k); const pid=(sel&&sel.value)?String(sel.value):'';
+      if(!pid)return alert('Selecciona el producto correcto.');
+      const p=prodPorId(pid); if(!p)return alert('No encontré el producto elegido.');
+      const ok=confirm('¿Vincular exactamente esta compra?\n\nHistórico: '+(c.producto||c.nombre||'Producto')+'\nProducto elegido: '+p.nombre+'\nCategoría: '+(p.categoria||'Sin categoría')+'\n\nSe usará el producto que tú elegiste.');
+      if(!ok)return;
+      await actualizarCompra(c,p);
+      try{if(typeof hc1437Pintar==='function')hc1437Pintar()}catch(e){}
+      try{if(typeof mostrarReportes==='function')mostrarReportes()}catch(e){}
+      alert('✅ Compra vinculada con: '+p.nombre);
+    }catch(e){alert('No pude reparar: '+(e&&e.message?e.message:e))}
+  };
+})();
+</script>
+
+
+
+<!-- HC 14.39: Reparador con buscador manual por tarjeta -->
+<style id="hc1439-reparador-buscador-css">
+.hc1439-search{width:100%;font-size:16px;padding:12px;border-radius:15px;border:1px solid #cbd5e1;background:#fff;color:#0f172a;margin:10px 0 8px;box-sizing:border-box}
+.hc1439-hint{font-size:12px;color:#64748b;font-weight:800;margin-top:6px;line-height:1.25}
+.hc1439-match{color:#166534;font-weight:900}
+.hc1439-empty{color:#9a3412;font-weight:900}
+</style>
+<script id="hc1439-reparador-buscador-manual">
+(function(){
+  if(window.HC1439_REPARADOR_BUSCADOR_MANUAL)return;
+  window.HC1439_REPARADOR_BUSCADOR_MANUAL=true;
+  const TAB_COMPRAS='despensa_compras';
+  function arr(x){return Array.isArray(x)?x:[]}
+  function esc(s){return String(s??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]))}
+  function moneyX(v){try{return (typeof money==='function')?money(v):Number(v||0).toFixed(2)}catch(e){return Number(v||0).toFixed(2)}}
+  function norm(s){try{if(typeof normalizarProductoNombre==='function')return normalizarProductoNombre(s)}catch(e){} return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim()}
+  function dbx(){try{if(typeof db!=='undefined'&&db)return db}catch(e){} return window.db||null}
+  function getProductos(){try{if(Array.isArray(productos))return productos}catch(e){} return arr(window.productos)}
+  function getCompras(){try{if(Array.isArray(compras))return compras}catch(e){} return arr(window.compras)}
+  function setCompras(a){try{compras=a}catch(e){} try{window.compras=a}catch(e){}}
+  function prodPorId(id){id=String(id||''); return getProductos().find(p=>String(p.id)===id)||null}
+  function prodPorNombre(nombre){const n=norm(nombre); if(!n)return null; return getProductos().find(p=>norm(p.nombre)===n)||null}
+  function categoriaResuelta(c){
+    if(c&&c.categoria&&String(c.categoria).trim())return String(c.categoria).trim();
+    const p1=prodPorId(c&&c.producto_id); if(p1&&p1.categoria)return String(p1.categoria).trim();
+    const p2=prodPorNombre((c&&c.producto)||(c&&c.nombre)); if(p2&&p2.categoria)return String(p2.categoria).trim();
+    return 'Sin categoría';
+  }
+  function pendientes(){return getCompras().filter(c=>categoriaResuelta(c)==='Sin categoría').map((c,i)=>Object.assign({_hc_idx:i},c));}
+  function compraKey(c){return String(c.id||c.compra_id||c._hc_idx||'')}
+  function buscarCompraPorKey(k){return pendientes().find(c=>compraKey(c)===String(k)) || getCompras().find(c=>String(c.id||c.compra_id||c._hc_idx||'')===String(k))}
+  function scoreProducto(c,p){
+    const a=norm(c.producto||c.nombre), b=norm(p.nombre); if(!a||!b)return 0;
+    if(a===b)return 100;
+    if(a.includes(b)||b.includes(a))return 90;
+    const ta=a.split(' ').filter(Boolean), tb=b.split(' ').filter(Boolean);
+    const hit=ta.filter(x=>tb.includes(x)||tb.some(y=>y.includes(x)||x.includes(y))).length;
+    return Math.round((hit/Math.max(ta.length,tb.length,1))*82);
+  }
+  function productosFiltrados(c,q){
+    const nq=norm(q), base=norm(c.producto||c.nombre);
+    let lista=getProductos().map(p=>({p,score:scoreProducto(c,p)}));
+    if(nq){
+      const tokens=nq.split(' ').filter(Boolean);
+      lista=lista.filter(x=>{
+        const txt=norm([x.p.nombre,x.p.categoria,x.p.tienda_preferida,x.p.notas].join(' '));
+        return tokens.every(t=>txt.includes(t) || txt.split(' ').some(w=>w.includes(t)||t.includes(w)));
+      }).map(x=>({p:x.p,score:Math.max(x.score,95)}));
+    }else{
+      lista=lista.filter(x=>x.score>=25 || norm(x.p.nombre).includes(base) || base.includes(norm(x.p.nombre)));
+    }
+    return lista.sort((a,b)=>b.score-a.score || String(a.p.nombre||'').localeCompare(String(b.p.nombre||''))).slice(0,20);
+  }
+  function selectOptions(c,k,q){
+    const exact=prodPorNombre(c.producto||c.nombre);
+    const lista=productosFiltrados(c,q);
+    const opts=['<option value="">Seleccionar producto actual...</option>'].concat(lista.map(x=>`<option value="${esc(x.p.id)}" ${!q&&exact&&String(exact.id)===String(x.p.id)?'selected':''}>${x.score>=100?'✅ ':x.score>=80?'🤖 ':''}${esc(x.p.nombre)} · ${esc(x.p.categoria||'Sin categoría')} · ${esc(x.p.tienda_preferida||'Sin tienda')}</option>`)).join('');
+    const count=document.getElementById('hc1439count_'+k); if(count)count.textContent=lista.length?`Coincidencias: ${lista.length}`:'Sin coincidencias con esa búsqueda';
+    return opts;
+  }
+  window.hc1439Buscar=function(k,q){
+    const c=buscarCompraPorKey(k); if(!c)return;
+    const sel=document.getElementById('hc1437sel_'+String(k)); if(!sel)return;
+    sel.innerHTML=selectOptions(c,k,q);
+    if(sel.options.length===2)sel.selectedIndex=1;
+  };
+  async function actualizarCompra(c,prod){
+    const cli=dbx(); if(!cli)throw new Error('No hay conexión con Supabase.');
+    const payloadCat={producto_id:prod.id,categoria:prod.categoria||null};
+    const payload={producto_id:prod.id};
+    const nombreHist=c.producto||c.nombre||'';
+    async function runUpdate(pl){
+      // Repara todos los registros históricos con ese mismo nombre cuando sea posible.
+      let q=cli.from(TAB_COMPRAS).update(pl);
+      if(nombreHist)q=q.eq('producto',nombreHist);
+      else if(c.id)q=q.eq('id',c.id);
+      else if(c.fecha)q=q.eq('fecha',c.fecha);
+      return await q;
+    }
+    let r=await runUpdate(payloadCat);
+    if(r.error && /categoria|column|schema cache/i.test(String(r.error.message||'')))r=await runUpdate(payload);
+    if(r.error)throw r.error;
+    const lista=getCompras().slice();
+    lista.forEach(x=>{
+      const mismo=norm(x.producto||x.nombre)===norm(nombreHist) || (c.id&&x.id&&String(x.id)===String(c.id));
+      if(mismo){x.producto_id=prod.id; if(prod.categoria)x.categoria=prod.categoria;}
+    });
+    setCompras(lista);
+  }
+  window.hc1437RepararUno=async function(k){
+    try{
+      const c=buscarCompraPorKey(k); if(!c)return alert('No encontré esa compra. Presiona Revisar otra vez.');
+      const sel=document.getElementById('hc1437sel_'+String(k));
+      const pid=(sel&&sel.value)?String(sel.value):'';
+      if(!pid)return alert('Selecciona el producto correcto o escribe en el buscador manual.');
+      const p=prodPorId(pid); if(!p)return alert('No encontré el producto elegido.');
+      if(!confirm('¿Vincular exactamente esta compra?\n\nHistórico: '+(c.producto||c.nombre||'Producto')+'\nProducto elegido: '+p.nombre+'\nCategoría: '+(p.categoria||'Sin categoría')+'\n\nSe actualizarán las compras históricas con ese mismo nombre.'))return;
+      await actualizarCompra(c,p);
+      try{if(typeof hc1437Pintar==='function')hc1437Pintar()}catch(e){}
+      try{if(typeof mostrarReportes==='function')mostrarReportes()}catch(e){}
+      alert('✅ Vinculado con: '+p.nombre);
+    }catch(e){alert('No pude reparar: '+(e&&e.message?e.message:e))}
+  };
+  window.hc1437Pintar=function(){
+    let box=document.getElementById('hc1437Box');
+    if(!box){const ref=document.getElementById('hc1436Box')||document.getElementById('reporteCategorias')||document.getElementById('reportes'); box=document.createElement('div'); box.id='hc1437Box'; if(ref&&ref.parentNode)ref.insertAdjacentElement('afterend',box); else document.body.appendChild(box);}
+    const list=pendientes();
+    if(!list.length){box.innerHTML='<h3>🔧 Reparador inteligente</h3><div class="hc1437-ok">✅ No hay compras sin categoría por reparar.</div>';return;}
+    const total=list.reduce((s,c)=>s+Number(c.total||0),0);
+    const rows=list.map((c,idx)=>{
+      const k=compraKey(c);
+      const opts=selectOptions(c,k,'');
+      const count=(productosFiltrados(c,'').length||0);
+      return `<div class="hc1437-card"><div class="hc1437-head"><div><div class="hc1437-name">${esc(c.producto||c.nombre||'Producto')}</div><div class="hc1437-meta">📅 ${esc(c.fecha||'Sin fecha')} · 🏪 ${esc(c.tienda||'Sin tienda')} · Cantidad: ${esc(c.cantidad||0)}<br>🔎 ${c.producto_id?'Tiene producto_id, pero no pude resolver categoría':'Sin producto_id; solo quedó nombre histórico'}</div></div><div class="hc1437-money">$${moneyX(c.total)}</div></div><input class="hc1439-search" id="hc1439q_${esc(k)}" placeholder="Buscar manual: escribe nombre, marca o categoría..." oninput="hc1439Buscar('${esc(k)}',this.value)"><div class="hc1437-row"><select id="hc1437sel_${esc(k)}" data-hc1437-key="${esc(k)}">${opts}</select></div><div class="hc1437-actions"><button onclick="hc1437RepararUno('${esc(k)}')">✅ Vincular compra</button><button class="sec" onclick="const q=document.getElementById('hc1439q_${esc(k)}'); if(q)q.value=''; hc1439Buscar('${esc(k)}','');">Limpiar búsqueda</button></div><div id="hc1439count_${esc(k)}" class="hc1439-hint ${count?'hc1439-match':'hc1439-empty'}">${count?'Coincidencias: '+count:'Sin coincidencias; escribe en el buscador manual.'}</div></div>`;
+    }).join('');
+    box.innerHTML=`<h3>🔧 Reparador inteligente</h3><div class="hc1437-sub">Ahora puedes buscar manualmente el producto actual. Se usará <b>exactamente</b> el producto que elijas.</div><div class="hc1437-total">Pendiente: $${moneyX(total)} · ${list.length} registro(s)</div><div class="hc1437-actions" style="margin-bottom:12px"><button class="sec" onclick="hc1437Pintar()">🔄 Revisar otra vez</button></div>${rows}`;
+  };
+  const old=window.mostrarReportes;
+  if(typeof old==='function'&&!old.__hc1439){
+    window.mostrarReportes=function(){const r=old.apply(this,arguments); setTimeout(()=>{try{window.hc1437Pintar()}catch(e){}},120); return r};
+    window.mostrarReportes.__hc1439=true; try{mostrarReportes=window.mostrarReportes}catch(e){}
+  }
+  setTimeout(()=>{try{window.hc1437Pintar()}catch(e){}},1200);
+})();
+</script>
+
+
+
+<!-- HC 14.41 - Pago de gastos: evita duplicados y avanza próxima fecha correctamente -->
+<script id="hc1441-pagos-ciclo-sin-duplicar">
+(function(){
+  if(window.HC1441_PAGOS_CICLO_SIN_DUPLICAR)return;
+  window.HC1441_PAGOS_CICLO_SIN_DUPLICAR=true;
+
+  function arr(v){return Array.isArray(v)?v:[];}
+  function n(v){return Number(v||0)||0;}
+  function today(){try{if(typeof hoyISO==='function')return hoyISO();}catch(e){} return new Date().toISOString().slice(0,10);}
+  function d0(s){
+    s=String(s||'').slice(0,10);
+    if(!s)return null;
+    const d=new Date(s+'T00:00:00');
+    return isNaN(d)?null:d;
+  }
+  function ymd(d){return d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`:'';}
+  function norm(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();}
+  function frecuencia(g){return String(g?.frecuencia||'mensual').toLowerCase();}
+  function pagoCoincide1441(g,p){
+    const gid=String(g?.id||''), pid=String(p?.gasto_id||p?.home_gasto_id||'');
+    if(gid&&pid&&gid===pid)return true;
+    const gn=norm(g?.nombre), pn=norm(p?.nombre||p?.concepto||p?.descripcion);
+    return !!gn && gn===pn;
+  }
+  function inicioCiclo(fechaBase, frec){
+    const base=d0(fechaBase)||d0(today());
+    if(!base)return null;
+    const f=String(frec||'mensual').toLowerCase();
+    const d=new Date(base);
+    if(f.includes('semanal')){ d.setDate(d.getDate()-6); return d; }
+    if(f.includes('quincenal')){ d.setDate(d.getDate()-14); return d; }
+    if(f.includes('bimestral')){ d.setMonth(d.getMonth()-2); d.setDate(d.getDate()+1); return d; }
+    if(f.includes('trimestral')){ d.setMonth(d.getMonth()-3); d.setDate(d.getDate()+1); return d; }
+    if(f.includes('semestral')){ d.setMonth(d.getMonth()-6); d.setDate(d.getDate()+1); return d; }
+    if(f.includes('anual')){ d.setFullYear(d.getFullYear()-1); d.setDate(d.getDate()+1); return d; }
+    d.setMonth(d.getMonth()-1); d.setDate(d.getDate()+1); return d;
+  }
+  function estaEnCiclo(g,p){
+    if(!pagoCoincide1441(g,p))return false;
+    const fp=d0(p.fecha_pago||p.fecha);
+    const venc=d0(g.fecha_proximo_pago||g.proximo_pago||g.fecha_pago||today());
+    if(!fp||!venc)return false;
+    const ini=inicioCiclo(venc,frecuencia(g));
+    return ini && fp>=ini && fp<=venc;
+  }
+  function pagos(){
+    try{return arr(window.pagosHogar||pagosHogar);}catch(e){return arr(window.pagosHogar);}
+  }
+  function gastos(){
+    try{return arr(window.gastosHogar||gastosHogar);}catch(e){return arr(window.gastosHogar);}
+  }
+  function pagadoCiclo(g){return pagos().some(p=>estaEnCiclo(g,p));}
+  function siguienteFecha(fecha, frec){
+    const d=d0(fecha)||d0(today())||new Date();
+    const f=String(frec||'mensual').toLowerCase();
+    if(f.includes('semanal'))d.setDate(d.getDate()+7);
+    else if(f.includes('quincenal'))d.setDate(d.getDate()+15);
+    else if(f.includes('bimestral'))d.setMonth(d.getMonth()+2);
+    else if(f.includes('trimestral'))d.setMonth(d.getMonth()+3);
+    else if(f.includes('semestral'))d.setMonth(d.getMonth()+6);
+    else if(f.includes('anual'))d.setFullYear(d.getFullYear()+1);
+    else d.setMonth(d.getMonth()+1);
+    return ymd(d);
+  }
+  function diasHasta(fecha){
+    const d=d0(fecha); if(!d)return null;
+    const h=d0(today());
+    return Math.ceil((d-h)/86400000);
+  }
+
+  window.estadoGasto=function(g){
+    if(pagadoCiclo(g))return {clase:'gasto-ok hc10-paid',txt:'Pagado en este ciclo',dot:'🟢',dias:null,pagado:true};
+    const d=diasHasta(g.fecha_proximo_pago||g.proximo_pago||g.fecha_pago);
+    const alerta=n(g.alerta_dias||5);
+    if(d===null)return {clase:'gasto-ok',txt:'Sin fecha',dot:'⚪',dias:null,pagado:false};
+    if(d<0)return {clase:'gasto-vencido',txt:`Vencido hace ${Math.abs(d)} día(s)`,dot:'🔴',dias:d,pagado:false};
+    if(d<=alerta)return {clase:'gasto-proximo',txt:`Próximo en ${d} día(s)`,dot:'🟡',dias:d,pagado:false};
+    return {clase:'gasto-ok',txt:`Al corriente · faltan ${d} día(s)`,dot:'🟢',dias:d,pagado:false};
+  };
+
+  window.registrarPagoHogar=async function(){
+    try{
+      const g=gastos().find(x=>String(x.id)===String(document.getElementById('pagoGasto')?.value||''));
+      if(!g)return alert('Selecciona un gasto');
+      const monto=n(document.getElementById('pagoMonto')?.value);
+      if(monto<=0)return alert('Monto inválido');
+      if(pagadoCiclo(g))return alert('Ese gasto ya está pagado en este ciclo. No lo dupliqué.');
+
+      const fecha=(document.getElementById('pagoFecha')?.value||today()).slice(0,10);
+      const cat=g.home_gastos_categorias?.nombre||g.categoria||'';
+      const item={
+        gasto_id:g.id,
+        categoria:cat,
+        nombre:g.nombre,
+        monto:monto,
+        fecha_pago:fecha,
+        metodo:(document.getElementById('pagoMetodo')?.value||'efectivo').trim()||'efectivo',
+        nota:(document.getElementById('pagoNota')?.value||'').trim(),
+        usuario:(window.sesion?.usuario||'')
+      };
+
+      const {error}=await db.from('home_gastos_pagos').insert(item);
+      if(error)return alert(error.message);
+
+      const prox=siguienteFecha(g.fecha_proximo_pago||fecha, g.frecuencia);
+      const upd=await db.from('home_gastos').update({fecha_proximo_pago:prox}).eq('id',g.id);
+      if(upd.error)alert('El pago se guardó, pero no pude actualizar la próxima fecha: '+upd.error.message);
+
+      if(document.getElementById('pagoMonto'))pagoMonto.value='';
+      if(document.getElementById('pagoNota'))pagoNota.value='';
+      try{if(typeof cargarTodo==='function')await cargarTodo();}catch(e){}
+      try{if(typeof mostrarGastosHogar==='function')mostrarGastosHogar();}catch(e){}
+      alert('Pago registrado. Próximo pago: '+prox);
+    }catch(e){alert(e?.message||String(e));}
+  };
+  try{registrarPagoHogar=window.registrarPagoHogar;}catch(e){}
+
+  const oldMostrar=window.mostrarGastosHogar;
+  if(typeof oldMostrar==='function'&&!oldMostrar.__hc1441){
+    window.mostrarGastosHogar=function(){
+      const r=oldMostrar.apply(this,arguments);
+      setTimeout(()=>{
+        try{
+          document.querySelectorAll('.gasto-status').forEach(card=>{
+            const b=card.querySelector('b'); if(!b)return;
+            const nombre=norm(b.textContent.replace(/^.*?\s/,''));
+            const g=gastos().find(x=>nombre.includes(norm(x.nombre))||norm(x.nombre).includes(nombre));
+            if(g&&pagadoCiclo(g))card.classList.add('hc10-paid','gasto-ok');
+          });
+        }catch(e){}
+      },80);
+      return r;
+    };
+    window.mostrarGastosHogar.__hc1441=true;
+    try{mostrarGastosHogar=window.mostrarGastosHogar;}catch(e){}
+  }
+})();
+</script>
+
 </body>
 
 
@@ -29508,5 +30136,182 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
   document.addEventListener('DOMContentLoaded',()=>setTimeout(corregirTarjetasReporte,900));
   window.addEventListener('load',()=>{setTimeout(corregirTarjetasReporte,1200);setTimeout(corregirTarjetasReporte,3200)});
   setInterval(()=>{try{if((typeof panelActual!=='undefined'&&panelActual==='reportes')||document.querySelector('#reportes:not(.oculto)'))corregirTarjetasReporte();}catch(e){}},3500);
+})();
+</script>
+
+<!-- HC 14.35: Gasto por categoría corrige compras históricas sin categoría -->
+<script id="hc1435-categoria-historial-corregida">
+(function(){
+  if(window.HC1435_CATEGORIA_HISTORIAL)return;
+  window.HC1435_CATEGORIA_HISTORIAL=true;
+
+  function num1435(v){ return Number(v||0)||0; }
+  function money1435(v){
+    try{ return (typeof money==='function') ? money(v) : num1435(v).toFixed(2); }
+    catch(e){ return num1435(v).toFixed(2); }
+  }
+  function norm1435(s){
+    try{ if(typeof normalizarProductoNombre==='function') return normalizarProductoNombre(s); }catch(e){}
+    return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();
+  }
+  function arrProductos(){
+    try{ if(Array.isArray(productos)) return productos; }catch(e){}
+    try{ if(Array.isArray(window.productos)) return window.productos; }catch(e){}
+    return [];
+  }
+  function arrCompras(){
+    try{ if(Array.isArray(compras)) return compras; }catch(e){}
+    try{ if(Array.isArray(window.compras)) return window.compras; }catch(e){}
+    return [];
+  }
+  function totalCompra1435(c){
+    const directo=Number(c && (c.total ?? c.monto ?? c.importe));
+    if(!isNaN(directo) && directo>0) return directo;
+    const cant=Number(c && (c.cantidad ?? 0));
+    const precio=Number(c && (c.precio ?? c.precio_unitario ?? c.precio_compra ?? c.precio_estimado ?? 0));
+    return (cant>0 && precio>0) ? cant*precio : 0;
+  }
+  function categoriaDeCompra(c){
+    const directa=String(c?.categoria || c?.categoria_nombre || c?.categoria_producto || '').trim();
+    if(directa && !/^sin categor/i.test(directa)) return directa;
+
+    const prods=arrProductos();
+    const pid=String(c?.producto_id || c?.id_producto || '').trim();
+    if(pid){
+      const p=prods.find(x=>String(x.id)===pid || String(x.producto_id)===pid);
+      if(p && String(p.categoria||'').trim()) return String(p.categoria).trim();
+    }
+
+    const nombre=norm1435(c?.producto || c?.nombre || c?.producto_nombre || '');
+    if(nombre){
+      const p=prods.find(x=>norm1435(x.nombre || x.producto || '')===nombre);
+      if(p && String(p.categoria||'').trim()) return String(p.categoria).trim();
+    }
+    return 'Sin categoría';
+  }
+  function pintarCategoriasCorregidas(){
+    const dst=document.getElementById('reporteCategorias');
+    if(!dst) return;
+    const grupos={};
+    arrCompras().forEach(c=>{
+      const cat=categoriaDeCompra(c);
+      grupos[cat]=(grupos[cat]||0)+totalCompra1435(c);
+    });
+    const html=Object.entries(grupos)
+      .sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0]))
+      .map(([k,v])=>`<div class="item"><b>${String(k).replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]))}</b>: $${money1435(v)}</div>`)
+      .join('') || '<p class="muted">Sin compras registradas.</p>';
+    dst.innerHTML=html;
+  }
+
+  const original=(typeof mostrarReportes==='function') ? mostrarReportes : window.mostrarReportes;
+  if(typeof original==='function' && !original.__hc1435){
+    const nuevo=function(){
+      const r=original.apply(this,arguments);
+      try{ pintarCategoriasCorregidas(); }catch(e){ console.warn('HC14.35 categorías:',e); }
+      setTimeout(()=>{try{pintarCategoriasCorregidas();}catch(e){}},80);
+      return r;
+    };
+    nuevo.__hc1435=true;
+    try{ window.mostrarReportes=nuevo; }catch(e){}
+    try{ mostrarReportes=nuevo; }catch(e){}
+  }
+  window.hc1435PintarCategoriasCorregidas=pintarCategoriasCorregidas;
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(pintarCategoriasCorregidas,1000));
+  window.addEventListener('load',()=>{setTimeout(pintarCategoriasCorregidas,1500);setTimeout(pintarCategoriasCorregidas,3500);});
+})();
+</script>
+
+
+<!-- HC 14.36: Revisar compras que siguen sin categoría -->
+<style id="hc1436-sin-categoria-css">
+#hc1436SinCategoriaBox{margin-top:14px;padding:14px;border-radius:22px;background:linear-gradient(135deg,rgba(255,247,237,.96),rgba(239,246,255,.96));border:1px solid rgba(251,146,60,.35);box-shadow:0 12px 30px rgba(15,23,42,.10)}
+#hc1436SinCategoriaBox h3{margin:0 0 8px;color:#0f172a;font-size:clamp(20px,5vw,30px)}
+#hc1436SinCategoriaBox .hc1436-sub{color:#64748b;font-weight:800;margin-bottom:12px;line-height:1.25}
+#hc1436SinCategoriaBox .hc1436-total{display:inline-block;margin:4px 0 12px;padding:9px 14px;border-radius:16px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-weight:1000}
+#hc1436SinCategoriaBox .hc1436-row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:12px;margin:10px 0;border-radius:18px;background:white;border:1px solid rgba(148,163,184,.35);box-shadow:0 8px 18px rgba(15,23,42,.07)}
+#hc1436SinCategoriaBox .hc1436-name{font-weight:1000;color:#0f172a;font-size:18px;line-height:1.1}
+#hc1436SinCategoriaBox .hc1436-meta{color:#64748b;font-weight:750;font-size:13px;margin-top:3px;line-height:1.25}
+#hc1436SinCategoriaBox .hc1436-money{font-weight:1000;color:#0f172a;font-size:18px;white-space:nowrap}
+#hc1436SinCategoriaBox .hc1436-hint{font-size:13px;color:#475569;font-weight:750;margin-top:10px;line-height:1.3}
+</style>
+<script id="hc1436-revisar-sin-categoria">
+(function(){
+  if(window.HC1436_REVISAR_SIN_CATEGORIA)return;
+  window.HC1436_REVISAR_SIN_CATEGORIA=true;
+
+  function n(v){return Number(v||0)||0;}
+  function moneyX(v){try{return (typeof money==='function')?money(v):n(v).toFixed(2)}catch(e){return n(v).toFixed(2)}}
+  function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+  function norm(s){try{if(typeof normalizarProductoNombre==='function')return normalizarProductoNombre(s)}catch(e){} return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim()}
+  function comprasArr(){try{if(Array.isArray(compras))return compras}catch(e){} try{if(Array.isArray(window.compras))return window.compras}catch(e){} return []}
+  function productosArr(){try{if(Array.isArray(productos))return productos}catch(e){} try{if(Array.isArray(window.productos))return window.productos}catch(e){} return []}
+  function totalCompra(c){
+    const directo=Number(c && (c.total ?? c.monto ?? c.importe));
+    if(!isNaN(directo) && directo>0)return directo;
+    const cant=Number(c && (c.cantidad ?? 0));
+    const precio=Number(c && (c.precio ?? c.precio_unitario ?? c.precio_compra ?? c.precio_estimado ?? 0));
+    return (cant>0 && precio>0)?cant*precio:0;
+  }
+  function categoriaDetectada(c){
+    if(typeof window.hc1435CategoriaDeCompra==='function'){
+      try{return window.hc1435CategoriaDeCompra(c)}catch(e){}
+    }
+    const directa=String(c?.categoria || c?.categoria_nombre || c?.categoria_producto || '').trim();
+    if(directa && !/^sin categor/i.test(directa))return directa;
+    const prods=productosArr();
+    const pid=String(c?.producto_id || c?.id_producto || '').trim();
+    if(pid){const p=prods.find(x=>String(x.id)===pid || String(x.producto_id)===pid); if(p&&String(p.categoria||'').trim())return String(p.categoria).trim()}
+    const nombre=norm(c?.producto || c?.nombre || c?.producto_nombre || '');
+    if(nombre){const p=prods.find(x=>norm(x.nombre||x.producto||'')===nombre); if(p&&String(p.categoria||'').trim())return String(p.categoria).trim()}
+    return 'Sin categoría';
+  }
+  function fechaCompra(c){return String(c?.fecha || c?.created_at || c?.fecha_compra || '').slice(0,10) || 'Sin fecha'}
+  function nombreCompra(c){return String(c?.producto || c?.nombre || c?.producto_nombre || 'Producto sin nombre').trim() || 'Producto sin nombre'}
+  function tiendaCompra(c){return String(c?.tienda || c?.tienda_nombre || c?.proveedor || 'Sin tienda').trim() || 'Sin tienda'}
+  function motivoCompra(c){
+    const pid=String(c?.producto_id||c?.id_producto||'').trim();
+    const nm=norm(nombreCompra(c));
+    if(!pid && !nm)return 'Sin producto_id y sin nombre claro';
+    if(!pid)return 'Sin producto_id; solo quedó el nombre histórico';
+    const p=productosArr().find(x=>String(x.id)===pid || String(x.producto_id)===pid);
+    if(!p)return 'producto_id no existe en inventario actual';
+    if(!String(p.categoria||'').trim())return 'producto encontrado, pero sin categoría';
+    return 'No se pudo clasificar con reglas actuales';
+  }
+  function pintarSinCategoria(){
+    const rep=document.getElementById('reporteCategorias');
+    if(!rep)return;
+    let box=document.getElementById('hc1436SinCategoriaBox');
+    if(!box){
+      box=document.createElement('div');
+      box.id='hc1436SinCategoriaBox';
+      rep.insertAdjacentElement('afterend',box);
+    }
+    const lista=comprasArr().map(c=>({c,cat:categoriaDetectada(c),total:totalCompra(c)}))
+      .filter(x=>/^sin categor/i.test(String(x.cat||'')) && x.total>0)
+      .sort((a,b)=>b.total-a.total);
+    const total=lista.reduce((s,x)=>s+x.total,0);
+    if(!lista.length){
+      box.innerHTML='<h3>✅ Sin categoría limpio</h3><div class="hc1436-sub">No encontré compras pendientes de clasificar.</div>';
+      return;
+    }
+    const rows=lista.slice(0,80).map(x=>{
+      const c=x.c;
+      return `<div class="hc1436-row"><div><div class="hc1436-name">${esc(nombreCompra(c))}</div><div class="hc1436-meta">📅 ${esc(fechaCompra(c))} · 🏪 ${esc(tiendaCompra(c))} · Cantidad: ${esc(c?.cantidad??'')} ${esc(c?.unidad??'')}<br>🔎 ${esc(motivoCompra(c))}</div></div><div class="hc1436-money">$${moneyX(x.total)}</div></div>`;
+    }).join('');
+    box.innerHTML=`<h3>🔎 Compras sin categoría</h3><div class="hc1436-sub">Estas compras forman el monto que todavía aparece como <b>Sin categoría</b>. Sirve para saber si fueron pruebas, nombres cambiados o productos eliminados.</div><div class="hc1436-total">Total pendiente: $${moneyX(total)} · ${lista.length} registro(s)</div>${rows}<div class="hc1436-hint">Para resolverlo después: si son pruebas se pueden ignorar o borrar; si son compras reales, se pueden vincular con un producto actual o actualizar la categoría del historial.</div>`;
+  }
+
+  window.hc1436PintarSinCategoria=pintarSinCategoria;
+  const old=(typeof mostrarReportes==='function')?mostrarReportes:window.mostrarReportes;
+  if(typeof old==='function' && !old.__hc1436){
+    const nuevo=function(){const r=old.apply(this,arguments); try{pintarSinCategoria()}catch(e){console.warn('HC14.36 sin categoría:',e)} setTimeout(()=>{try{pintarSinCategoria()}catch(e){}},120); return r};
+    nuevo.__hc1436=true;
+    try{window.mostrarReportes=nuevo}catch(e){}
+    try{mostrarReportes=nuevo}catch(e){}
+  }
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(pintarSinCategoria,1200));
+  window.addEventListener('load',()=>{setTimeout(pintarSinCategoria,1600);setTimeout(pintarSinCategoria,3600)});
 })();
 </script>
