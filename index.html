@@ -24428,6 +24428,122 @@ body.dark #comidaFueraPanel #cfConsejo{
   }
 })();
 </script>
+
+
+<script id="hc-fix-posponer-recomendaciones-14-45">
+/* HomeControl 14.45 - Corrige Posponer en Recomendaciones de hoy
+   Problema: algunas tarjetas se pintaban con botón "Posponer" sin producto_id.
+   Solución: detecta el producto por la tarjeta y llama al posponer real. */
+(function(){
+  if(window.HC_FIX_POSPONER_RECOMENDACIONES_1445) return;
+  window.HC_FIX_POSPONER_RECOMENDACIONES_1445 = true;
+
+  function listaProductosHC(){
+    try{ if(typeof productos !== 'undefined' && Array.isArray(productos)) return productos; }catch(e){}
+    return Array.isArray(window.productos) ? window.productos : [];
+  }
+
+  function normHC(s){
+    return String(s||'')
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[^a-z0-9]+/g,' ')
+      .trim();
+  }
+
+  function esPerecederoFix(p){
+    try{ if(typeof esSemanal === 'function' && esSemanal(p)) return true; }catch(e){}
+    try{ if(typeof esPerecederoHC === 'function' && esPerecederoHC(p)) return true; }catch(e){}
+    try{ if(typeof esPerecedero === 'function' && esPerecedero(p)) return true; }catch(e){}
+    const txt = normHC((p&&p.nombre)||'') + ' ' + normHC((p&&p.categoria)||'');
+    return /carne|chuleta|pollo|pescado|fruta|verdura|leche|queso|jamon|perecedero/.test(txt);
+  }
+
+  function productoDesdeBoton(btn){
+    if(!btn) return null;
+    const directo = btn.dataset?.posponerId || '';
+    if(directo){
+      const p = listaProductosHC().find(x=>String(x.id)===String(directo));
+      if(p) return p;
+    }
+
+    const card = btn.closest('.recommendation,.action-item,.hc-review-card,.quick-item,.item-card,.producto-card,div');
+    if(!card) return null;
+
+    let nombre = '';
+    const candidatos = [
+      card.querySelector('.action-name'),
+      card.querySelector('.hc-review-title'),
+      card.querySelector('b'),
+      card.querySelector('strong')
+    ].filter(Boolean);
+
+    for(const el of candidatos){
+      const t = String(el.textContent||'').replace(/^\d+\.\s*/,'').trim();
+      if(t){ nombre=t; break; }
+    }
+    if(!nombre) nombre = String(card.textContent||'').split('\n').map(x=>x.trim()).filter(Boolean)[0]||'';
+
+    const n = normHC(nombre);
+    if(!n) return null;
+    return listaProductosHC().find(p=>normHC(p.nombre)===n)
+        || listaProductosHC().find(p=>n.includes(normHC(p.nombre)) || normHC(p.nombre).includes(n));
+  }
+
+  async function posponerDesdeBoton(btn, ev){
+    const txt = String(btn.textContent||'').toLowerCase();
+    if(!txt.includes('posponer') && !txt.includes('comprar luego')) return false;
+
+    const p = productoDesdeBoton(btn);
+    if(!p) return false;
+
+    if(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    }
+
+    const dias = esPerecederoFix(p) ? 7 : 30;
+    const motivo = esPerecederoFix(p) ? 'Pospuesto: revisar la próxima semana' : 'Pospuesto: revisar el próximo mes';
+
+    try{
+      if(typeof window.posponerProducto === 'function'){
+        await window.posponerProducto(p.id, dias, motivo, btn);
+      }else{
+        alert('No encontré la función posponerProducto.');
+        return true;
+      }
+
+      try{ if(typeof mostrarAsistente === 'function') mostrarAsistente(); }catch(e){}
+      try{ if(typeof mostrarPlanAccion === 'function') mostrarPlanAccion(); }catch(e){}
+      try{ if(typeof actualizarPantalla === 'function') actualizarPantalla(); }catch(e){}
+    }catch(e){
+      alert('No se pudo posponer: '+(e.message||e));
+    }
+    return true;
+  }
+
+  document.addEventListener('click', function(ev){
+    const btn = ev.target.closest('button');
+    if(!btn) return;
+    posponerDesdeBoton(btn, ev);
+  }, true);
+
+  function completarBotones(){
+    document.querySelectorAll('button').forEach(btn=>{
+      const txt=String(btn.textContent||'').toLowerCase();
+      if((txt.includes('posponer') || txt.includes('comprar luego')) && !btn.dataset.posponerTipo){
+        btn.type='button';
+        btn.dataset.posponerTipo='posponer';
+        btn.dataset.posponerMotivo='Pospuesto';
+      }
+    });
+  }
+  window.addEventListener('load',()=>{setTimeout(completarBotones,500);setTimeout(completarBotones,2000);});
+  new MutationObserver(completarBotones).observe(document.documentElement,{childList:true,subtree:true});
+})();
+</script>
+
 </body>
 
 
@@ -30606,101 +30722,5 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
     try{cargarTodo=nuevo;}catch(e){}
   }
   document.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{try{hcBackupSemanalAutomatico(); if(document.getElementById('hcListaBackups'))hcCargarBackups();}catch(e){}},2200));
-})();
-</script>
-
-<style id="hc1443-anti-temblor-global-inventario">
-/* HomeControl 14.43 - Anti-temblor real en Inventario
-   El temblor venía de transiciones/transform/animaciones globales aplicadas a tarjetas, paneles,
-   botones, inputs y selects. En Android/WebView esas animaciones repintan toda el área al tocar,
-   enfocar o deslizar. Este bloque estabiliza Inventario completo. */
-#inventario,
-#inventario *,
-#inventario *::before,
-#inventario *::after{
-  animation: none !important;
-  transition-property: border-color, background-color, color, opacity !important;
-  transition-duration: .01ms !important;
-  transition-delay: 0ms !important;
-  scroll-behavior: auto !important;
-}
-#inventario,
-#inventario .card,
-#inventario .panel,
-#inventario .box,
-#inventario .grid,
-#inventario .product-card,
-#inventario .producto-card,
-#inventario .producto-item,
-#inventario input,
-#inventario select,
-#inventario textarea,
-#inventario button,
-#inventario .btn,
-#inventario label,
-#inventario h2,
-#inventario h3,
-#inventario p,
-#inventario div{
-  transform: none !important;
-  will-change: auto !important;
-  backface-visibility: visible !important;
-  -webkit-backface-visibility: visible !important;
-}
-#inventario button:active,
-#inventario .btn:active,
-#inventario .box:active,
-#inventario .card:active,
-#inventario .panel:active,
-#inventario .product-card:active,
-#inventario .producto-card:active,
-#inventario .producto-item:active{
-  transform: none !important;
-  filter: none !important;
-}
-#inventario input:focus,
-#inventario select:focus,
-#inventario textarea:focus{
-  transform:none !important;
-  zoom:1 !important;
-}
-@media (max-width: 760px){
-  html, body{
-    overflow-x:hidden !important;
-  }
-  #inventario{
-    contain: paint !important;
-    touch-action: pan-y !important;
-  }
-  #inventario input,
-  #inventario select,
-  #inventario textarea{
-    font-size:16px !important;
-    min-height:52px !important;
-    -webkit-appearance:none;
-    appearance:none;
-  }
-}
-</style>
-<script id="hc1443-anti-temblor-js">
-(function(){
-  if(window.HC1443_ANTI_TEMBLOR)return;
-  window.HC1443_ANTI_TEMBLOR=true;
-  function estabilizarInventario(){
-    try{
-      var inv=document.getElementById('inventario');
-      if(!inv)return;
-      inv.classList.add('hc1443-inventario-estable');
-      inv.querySelectorAll('.hc-pulse-soft').forEach(function(x){x.classList.remove('hc-pulse-soft')});
-      inv.querySelectorAll('[style*="transform"]').forEach(function(x){x.style.transform='none'});
-    }catch(e){}
-  }
-  document.addEventListener('DOMContentLoaded',function(){setTimeout(estabilizarInventario,100);setTimeout(estabilizarInventario,1200);});
-  document.addEventListener('focusin',function(e){
-    if(e.target && e.target.closest && e.target.closest('#inventario')) estabilizarInventario();
-  },true);
-  document.addEventListener('touchstart',function(e){
-    if(e.target && e.target.closest && e.target.closest('#inventario')) estabilizarInventario();
-  },{passive:true,capture:true});
 })();
 </script>
