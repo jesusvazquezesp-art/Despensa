@@ -24544,6 +24544,135 @@ body.dark #comidaFueraPanel #cfConsejo{
 })();
 </script>
 
+
+<script id="hc-14-46-posponer-universal">
+/* HomeControl 14.46 - Posponer universal
+   Corrige botones Posponer/Comprar luego que fueron renderizados sin producto_id.
+   Busca el producto por el nombre visible de la tarjeta y le agrega data-posponer-id.
+*/
+(function(){
+  if(window.HC1446_POSPONER_UNIVERSAL) return;
+  window.HC1446_POSPONER_UNIVERSAL = true;
+
+  function norm(t){
+    return String(t||'')
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[^a-z0-9]+/g,' ')
+      .trim();
+  }
+
+  function listaProductosHC(){
+    try{ if(typeof productos !== 'undefined' && Array.isArray(productos)) return productos; }catch(e){}
+    return Array.isArray(window.productos) ? window.productos : [];
+  }
+
+  function nombreDesdeTarjeta(btn){
+    const card = btn.closest('.recommendation,.action-item,.hc-review-card,.quick-item,.item,.card,[class*="recommend"]') || btn.parentElement;
+    if(!card) return '';
+
+    const candidatos = [
+      '.action-name',
+      '.hc-review-title',
+      '.quick-name',
+      '.producto-nombre',
+      '.product-name',
+      'b',
+      'h3',
+      'h4'
+    ];
+
+    for(const sel of candidatos){
+      const el = card.querySelector(sel);
+      const txt = (el && el.textContent || '').trim();
+      if(txt && !/agregar|posponer|comprar luego|puede esperar|recomendaciones/i.test(txt)) return txt;
+    }
+
+    // Respaldo: primera línea útil de la tarjeta.
+    const lineas = String(card.innerText||'').split('\n').map(x=>x.trim()).filter(Boolean);
+    for(const l of lineas){
+      if(!/agregar|posponer|comprar luego|autonom[ií]a|mensual|semanal|quedan|m[ií]nimo|urgente|conviene|cantidad sugerida|importante|tranquilo/i.test(l)){
+        return l.replace(/^\d+\.\s*/,'').trim();
+      }
+    }
+    return '';
+  }
+
+  function buscarProductoPorNombre(nombre){
+    const n = norm(nombre);
+    if(!n) return null;
+    const arr = listaProductosHC();
+    let p = arr.find(x => norm(x.nombre) === n);
+    if(p) return p;
+    p = arr.find(x => norm(x.nombre).startsWith(n) || n.startsWith(norm(x.nombre)));
+    if(p) return p;
+    p = arr.find(x => norm(x.nombre).includes(n) || n.includes(norm(x.nombre)));
+    return p || null;
+  }
+
+  function completarBoton(btn){
+    if(!btn || btn.dataset.posponerId) return false;
+    const txt = (btn.textContent||'').toLowerCase();
+    const esPosponer = txt.includes('posponer') || txt.includes('comprar luego') || txt.includes('luego');
+    if(!esPosponer) return false;
+
+    // Si está dentro del modal, no tocar.
+    if(btn.closest('#hc1375Modal')) return false;
+
+    const nombre = nombreDesdeTarjeta(btn);
+    const p = buscarProductoPorNombre(nombre);
+    if(!p || !p.id) return false;
+
+    btn.type = 'button';
+    btn.dataset.posponerId = String(p.id);
+    btn.dataset.posponerTipo = txt.includes('luego') ? 'luego' : 'posponer';
+    btn.dataset.posponerMotivo = txt.includes('luego') ? 'Comprar luego' : 'Pospuesto';
+    btn.removeAttribute('onclick');
+    return true;
+  }
+
+  function completarTodo(){
+    document.querySelectorAll('button').forEach(completarBoton);
+  }
+
+  // Delegación de emergencia: aunque el botón se haya pintado justo antes del toque, lo corrige al instante.
+  document.addEventListener('click', function(ev){
+    const btn = ev.target.closest('button');
+    if(!btn || btn.closest('#hc1375Modal')) return;
+
+    const txt = (btn.textContent||'').toLowerCase();
+    if(!(txt.includes('posponer') || txt.includes('comprar luego') || txt.includes('luego'))) return;
+
+    if(!btn.dataset.posponerId) completarBoton(btn);
+    const id = btn.dataset.posponerId;
+    if(!id) return;
+
+    ev.preventDefault();
+    ev.stopPropagation();
+    if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+
+    const motivo = btn.dataset.posponerMotivo || (txt.includes('luego') ? 'Comprar luego' : 'Pospuesto');
+    if(typeof window.posponerProducto === 'function'){
+      window.posponerProducto(id, 0, motivo, btn);
+    }else{
+      alert('Producto localizado, pero no encontré la función posponerProducto.');
+    }
+  }, true);
+
+  window.hc1446CompletarPosponer = completarTodo;
+  window.addEventListener('load', ()=>{
+    setTimeout(completarTodo, 300);
+    setTimeout(completarTodo, 1000);
+    setTimeout(completarTodo, 2500);
+  });
+
+  try{
+    const obs = new MutationObserver(()=>completarTodo());
+    obs.observe(document.documentElement,{childList:true,subtree:true});
+  }catch(e){}
+})();
+</script>
+
 </body>
 
 
