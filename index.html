@@ -107,7 +107,7 @@
 
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>HomeControl 14.5 - Optimización Supabase</title>
+<title>HomeControl 15.2 - Ticket y modo compra limpio</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
 let comidaFuera = [];
 async function cargarComidaFuera(){
@@ -24490,146 +24490,6 @@ body.dark #comidaFueraPanel #cfConsejo{
   new MutationObserver(()=>setTimeout(prepararBotonesPosponer,0)).observe(document.documentElement,{childList:true,subtree:true});
 })();
 </script>
-
-<script id="hc-14-5-optimizacion-supabase-egress">
-/* HomeControl 14.5 - Optimización Supabase / menos egress
-   Objetivo: bajar consumo de Supabase sin cambiar el flujo del carrito ni crear módulos nuevos.
-   - Cache sólo en memoria mientras la app está abierta.
-   - Evita recargas repetidas si se toca varias veces la pantalla.
-   - Reportes y aprendizaje usan datos ya cargados cuando es posible.
-   - Selects de reportes traen menos columnas.
-*/
-(function(){
-  if(window.HC145_SUPABASE_EGRESS)return;
-  window.HC145_SUPABASE_EGRESS=true;
-
-  const T={cargarTodo:0, reportes:0, historial:0, render:0};
-  const MIN_CARGA=25000;       // 25 segundos sin repetir carga completa
-  const MIN_REPORTES=300000;   // 5 minutos para reportes pesados
-  const MIN_HISTORIAL=180000;  // 3 minutos para historial pesado
-  const MET={bloqueadas:0, cargas:0, reportes:0, historial:0, inicio:Date.now(), notas:[]};
-  window.hc145Metricas=MET;
-
-  function now(){return Date.now()}
-  function arr(v){return Array.isArray(v)?v:[]}
-  function log(n){MET.notas.unshift(new Date().toLocaleTimeString('es-MX')+' · '+n); MET.notas=MET.notas.slice(0,12)}
-  function renderLigero(){
-    try{ if(typeof mostrarCarrito==='function') mostrarCarrito(); }catch(e){}
-    try{ if(typeof actualizarPanelCarritoRapido==='function') actualizarPanelCarritoRapido(); }catch(e){}
-    try{ if(typeof hc1418ActualizarTotalesCarrito==='function') hc1418ActualizarTotalesCarrito(); }catch(e){}
-    try{ if(typeof hc1422RenderAhora==='function') hc1422RenderAhora(false); }catch(e){}
-  }
-  function estado(txt){try{ if(typeof setSync==='function') setSync(txt); }catch(e){} }
-
-  // 1) Bloquea llamadas repetidas a cargarTodo. No guarda datos del hogar en teléfono; sólo evita repetir red.
-  const cargarTodoPrev=(typeof window.cargarTodo==='function')?window.cargarTodo:(typeof cargarTodo==='function'?cargarTodo:null);
-  if(cargarTodoPrev && !cargarTodoPrev.__hc145){
-    const nuevo=async function(opciones){
-      const forzar=opciones===true || (opciones&&opciones.full) || window.HC145_FORZAR_CARGA;
-      if(!forzar && T.cargarTodo && now()-T.cargarTodo<MIN_CARGA){
-        MET.bloqueadas++;
-        estado('Datos recientes; evité recargar Supabase 😊');
-        renderLigero();
-        return true;
-      }
-      T.cargarTodo=now(); MET.cargas++;
-      try{return await cargarTodoPrev.apply(this,arguments)}
-      finally{window.HC145_FORZAR_CARGA=false;}
-    };
-    nuevo.__hc145=true;
-    try{window.cargarTodo=nuevo}catch(e){}
-    try{cargarTodo=nuevo}catch(e){}
-  }
-
-  // 2) Reportes financieros: si ya hay datos en memoria y están recientes, no vuelve a pedir 3 tablas completas.
-  const repPrev=window.hcCargarReportesSupabase;
-  window.hcCargarReportesSupabase=async function(force){
-    if(!force && T.reportes && now()-T.reportes<MIN_REPORTES){
-      MET.bloqueadas++; log('Reportes: usé memoria, sin consultar Supabase.');
-      return window.hcCacheReportes || true;
-    }
-    if(typeof db==='undefined'||!db){return repPrev?repPrev.apply(this,arguments):false;}
-    MET.reportes++; T.reportes=now();
-    try{
-      window.hcCacheReportes=window.hcCacheReportes||{despensa_compras:[],home_gastos:[],home_gastos_pagos:[],cargado:false};
-      const [c,g,p]=await Promise.all([
-        db.from('despensa_compras').select('id,producto_id,producto,cantidad,precio,total,fecha,fecha_compra,created_at,tienda,categoria').order('fecha',{ascending:false}).limit(1200),
-        db.from('home_gastos').select('id,nombre,categoria,activo').limit(500),
-        db.from('home_gastos_pagos').select('id,gasto_id,monto,total,fecha_pago,fecha,created_at,categoria,tipo,notas,nombre,servicio,tienda').order('fecha_pago',{ascending:false}).limit(500)
-      ]);
-      if(!c.error) window.hcCacheReportes.despensa_compras=c.data||[];
-      if(!g.error) window.hcCacheReportes.home_gastos=g.data||[];
-      if(!p.error) window.hcCacheReportes.home_gastos_pagos=p.data||[];
-      window.hcCacheReportes.cargado=true;
-      log('Reportes: carga ligera completada.');
-      return window.hcCacheReportes;
-    }catch(e){
-      console.warn('HC14.5 reportes ligeros fallaron',e);
-      return repPrev?repPrev.apply(this,arguments):false;
-    }
-  };
-
-  // 3) Historial de precios / IA: no repetir consultas pesadas en cada entrada al panel.
-  const histPrev=window.hc1422CargarHistorialSegundoPlano;
-  if(typeof histPrev==='function'){
-    window.hc1422CargarHistorialSegundoPlano=async function(force){
-      if(!force && T.historial && now()-T.historial<MIN_HISTORIAL){
-        MET.bloqueadas++; log('Historial: usé memoria, sin recargar.');
-        return true;
-      }
-      T.historial=now(); MET.historial++;
-      return histPrev.apply(this,arguments);
-    };
-  }
-
-  // 4) Botón manual de sincronización completa. Sólo aquí se fuerza todo.
-  window.hc145SincronizarTodo=async function(){
-    window.HC145_FORZAR_CARGA=true;
-    T.reportes=0; T.historial=0;
-    estado('Sincronización completa solicitada...');
-    if(typeof cargarTodo==='function') await cargarTodo(true);
-    try{ if(typeof window.hcCargarReportesSupabase==='function') await window.hcCargarReportesSupabase(true); }catch(e){}
-    try{ if(typeof window.hc1422CargarHistorialSegundoPlano==='function') await window.hc1422CargarHistorialSegundoPlano(true); }catch(e){}
-    renderLigero();
-    alert('Sincronización completa terminada.');
-  };
-
-  // 5) Mini panel de salud de Supabase para revisar si está bajando el uso.
-  function ensurePanel(){
-    let p=document.getElementById('hc145Panel');
-    if(p)return p;
-    const css=document.createElement('style');
-    css.textContent=`#hc145Panel{position:fixed;left:12px;right:12px;bottom:82px;z-index:99999;background:linear-gradient(135deg,#0f172a,#164e63);color:#fff;border:1px solid rgba(125,211,252,.45);border-radius:20px;padding:14px;box-shadow:0 18px 45px rgba(0,0,0,.35);font-family:system-ui,-apple-system,Segoe UI,sans-serif;display:none;max-height:55vh;overflow:auto}#hc145Panel.show{display:block}#hc145Panel h3{margin:0 0 8px;color:#a7f3d0}#hc145Panel .row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(255,255,255,.13);padding:7px 0}#hc145Panel button{border:0;border-radius:14px;padding:10px 12px;font-weight:900;color:#fff;background:#0ea5e9;margin:6px 6px 0 0}#hc145Mini{position:fixed;left:12px;bottom:12px;z-index:99998;border:0;border-radius:999px;background:#0f766e;color:#fff;padding:10px 13px;font-weight:950;box-shadow:0 10px 25px rgba(0,0,0,.28)}`;
-    document.head.appendChild(css);
-    p=document.createElement('div');
-    p.id='hc145Panel';
-    p.innerHTML='<h3>📉 HomeControl 14.5 · Supabase</h3><div id="hc145Datos"></div><button onclick="hc145PintarPanel()">Actualizar vista</button><button onclick="hc145SincronizarTodo()">🔄 Sincronizar todo</button><button onclick="document.getElementById(\'hc145Panel\').classList.remove(\'show\')">Cerrar</button>';
-    document.body.appendChild(p);
-    const b=document.createElement('button');
-    b.id='hc145Mini'; b.textContent='📉 Supabase'; b.onclick=()=>{hc145PintarPanel();p.classList.add('show')};
-    document.body.appendChild(b);
-    return p;
-  }
-  window.hc145PintarPanel=function(){
-    const p=ensurePanel();
-    const d=document.getElementById('hc145Datos');
-    const up=Math.round((now()-MET.inicio)/60000);
-    d.innerHTML=`
-      <div class="row"><span>Cargas reales</span><b>${MET.cargas}</b></div>
-      <div class="row"><span>Recargas evitadas</span><b>${MET.bloqueadas}</b></div>
-      <div class="row"><span>Reportes consultados</span><b>${MET.reportes}</b></div>
-      <div class="row"><span>Historial pesado</span><b>${MET.historial}</b></div>
-      <div class="row"><span>Productos en memoria</span><b>${arr(window.productos).length}</b></div>
-      <div class="row"><span>Compras en memoria</span><b>${arr(window.compras).length}</b></div>
-      <div class="row"><span>Carrito en memoria</span><b>${arr(window.carrito).length}</b></div>
-      <div class="row"><span>Tiempo abierta</span><b>${up} min</b></div>
-      <p style="opacity:.82;margin:10px 0 0">${MET.notas.map(x=>'• '+x).join('<br>')||'Aún sin eventos.'}</p>`;
-    return p;
-  };
-  window.addEventListener('load',()=>setTimeout(()=>{try{ensurePanel(); log('Optimización 14.5 activa.')}catch(e){}},1400));
-})();
-</script>
-
 </body>
 
 
@@ -29326,22 +29186,35 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
 })();
 </script>
 
-<!-- HC 14.18: Carritos por tienda - botón editar correcto y totales del carrito reparados -->
-<style id="hc1418-carritos-fix-css">
-.hc1417-row .hc1418-edit-btn,
-.hc1417-row .hc1418-del-btn{cursor:pointer!important;opacity:1!important;pointer-events:auto!important}
-.hc1417-row .hc1418-edit-btn{background:linear-gradient(135deg,#2563eb,#06b6d4)!important;color:#fff!important}
-.hc1417-row .hc1418-del-btn{background:linear-gradient(135deg,#ef4444,#e11d48)!important;color:#fff!important}
+<!-- HC 15.2: Ticket y modo compra integrados en el carrito existente, sin panel duplicado -->
+<style id="hc152-ticket-modo-css">
+.hc1417-store-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0 10px;padding:10px;border-radius:18px;background:rgba(14,165,233,.08);border:1px solid rgba(14,165,233,.18)}
+.hc1417-store-tools button{margin:0!important;min-height:44px;border-radius:14px;font-weight:950;font-size:14px}
+.hc152-buy-on .hc1417-row{transition:none!important;animation:none!important;transform:none!important}
+.hc152-row-marked{opacity:.72;background:rgba(34,197,94,.16)!important;outline:2px solid rgba(34,197,94,.25)}
+.hc152-mark-btn{background:linear-gradient(135deg,#22c55e,#14b8a6)!important;color:white!important}
+.hc152-mark-btn.off{background:linear-gradient(135deg,#64748b,#334155)!important}
+.hc152-section-title{margin:8px 0 6px;font-weight:950;color:#e2e8f0;font-size:13px;letter-spacing:.02em}
+.hc152-store-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:8px 0 10px}
+.hc152-store-summary div{background:rgba(255,255,255,.13);border-radius:14px;padding:8px 10px;font-weight:900;text-align:center}
+.hc152-store-summary small{display:block;font-size:11px;opacity:.8}
+.hc152-modal{position:fixed;inset:0;background:rgba(15,23,42,.62);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px}
+.hc152-card{width:min(760px,96vw);max-height:90vh;overflow:auto;background:#f8fafc;color:#0f172a;border-radius:22px;padding:16px;box-shadow:0 25px 80px rgba(0,0,0,.35)}
+.hc152-card h3{margin:0 0 8px}.hc152-card textarea{width:100%;min-height:170px;border-radius:14px;padding:12px;font-weight:700}.hc152-card input,.hc152-card select{width:100%;min-height:42px;border-radius:12px;margin:5px 0;padding:8px}.hc152-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.hc152-actions button{flex:1;min-width:140px}.hc152-result{margin-top:10px}.hc152-pill{display:inline-block;border-radius:999px;padding:5px 9px;margin:3px;background:#e0f2fe;color:#075985;font-weight:900;font-size:12px}.hc152-ok{background:#dcfce7!important;color:#166534!important}.hc152-warn{background:#fef3c7!important;color:#92400e!important}.hc152-danger{background:#fee2e2!important;color:#991b1b!important}
+@media(max-width:720px){.hc1417-store-tools{grid-template-columns:1fr}.hc152-store-summary{grid-template-columns:1fr}.hc1417-store-tools button{font-size:13px}}
 </style>
-<script id="hc1418-carritos-fix">
+<script id="hc152-ticket-modo-integrado">
 (function(){
-  if(window.HC1418_CARRITOS_FIX)return;
-  window.HC1418_CARRITOS_FIX=true;
+  if(window.HC152_TICKET_MODO_INTEGRADO)return;
+  window.HC152_TICKET_MODO_INTEGRADO=true;
 
-  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
+  const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  let modoCompra=false;
+  const marcados=new Set();
+
   function isUuid(v){return UUID.test(String(v||''));}
   function n(v){return Number(String(v??0).replace(',','.'))||0;}
-  function fmt(v){try{return typeof money==='function'?money(v):n(v).toFixed(2)}catch(e){return n(v).toFixed(2)}}
+  function fmt(v){try{return (typeof money==='function')?money(v):n(v).toFixed(2)}catch(e){return n(v).toFixed(2)}}
   function esc(s){return String(s??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]));}
   function norm(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9ñ]+/g,' ').replace(/\s+/g,' ').trim();}
   function tienda(x){const t=String(x?.tienda||'').trim();return t||'Sin tienda';}
@@ -29354,76 +29227,125 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
   function key(x){return (isUuid(x?.producto_id)?String(x.producto_id):'') || ('nombre:'+norm(nombre(x))+'|tienda:'+norm(tienda(x)));}
   function dedupe(lista){
     const map=new Map();
-    (lista||[]).filter(x=>x&&x.activo!==false&&String(x.estado||'pendiente')==='pendiente').forEach(x=>{
-      const k=key(x); if(!map.has(k))map.set(k,[]); map.get(k).push(x);
-    });
-    const out=[];
-    map.forEach(g=>{
-      g.sort((a,b)=>{
-        const ap=precio(a), bp=precio(b);
-        if((bp>0)!==(ap>0))return (bp>0)-(ap>0);
-        const ac=String(a.created_at||''), bc=String(b.created_at||'');
-        return ac.localeCompare(bc);
-      });
-      out.push(g[0]);
-    });
+    (lista||[]).filter(x=>x&&x.activo!==false&&String(x.estado||'pendiente')==='pendiente').forEach(x=>{const k=key(x); if(!map.has(k))map.set(k,[]); map.get(k).push(x);});
+    const out=[]; map.forEach(g=>{g.sort((a,b)=>{const ap=precio(a),bp=precio(b); if((bp>0)!==(ap>0))return (bp>0)-(ap>0); return String(a.created_at||'').localeCompare(String(b.created_at||''));}); out.push(g[0]);});
     return out;
   }
-  function gruposTienda(lista){
-    const m=new Map();
-    lista.forEach(x=>{const t=tienda(x); if(!m.has(t))m.set(t,[]); m.get(t).push(x);});
-    return [...m.entries()].sort((a,b)=>a[0].localeCompare(b[0],'es'));
-  }
+  function gruposTienda(lista){const m=new Map(); lista.forEach(x=>{const t=tienda(x); if(!m.has(t))m.set(t,[]); m.get(t).push(x);}); return [...m.entries()].sort((a,b)=>a[0].localeCompare(b[0],'es'));}
   function actualizarTotalesCarrito14(){
-    const ps=productos();
-    const totalDespensa=ps.reduce((s,p)=>s+n(p.cantidad)*n(p.precio),0);
-    const bajos=ps.filter(p=>n(p.cantidad)<=limiteMin(p)).length;
+    const ps=productos(); const totalDespensa=ps.reduce((s,p)=>s+n(p.cantidad)*n(p.precio),0); const bajos=ps.filter(p=>n(p.cantidad)<=limiteMin(p)).length;
     const a=document.getElementById('totalInventarioCarrito'); if(a)a.textContent=fmt(totalDespensa);
     const b=document.getElementById('totalBajosCarrito'); if(b)b.textContent=String(bajos);
     const c=document.getElementById('totalInventarioInv'); if(c)c.textContent=fmt(totalDespensa);
     const d=document.getElementById('totalBajosInv'); if(d)d.textContent=String(bajos);
   }
-  window.hc1418AbrirEditarCarrito=function(id){
-    try{
-      if(typeof window.abrirEditarCarrito==='function')return window.abrirEditarCarrito(id);
-      if(typeof abrirEditarCarrito==='function')return abrirEditarCarrito(id);
-      alert('No encontré la función de edición del carrito.');
-    }catch(e){alert('No pude abrir edición: '+(e.message||e));}
+  function repintar(){try{if(typeof mostrarCarrito==='function')mostrarCarrito()}catch(e){}}
+
+  window.hc1418AbrirEditarCarrito=function(id){try{if(typeof window.abrirEditarCarrito==='function')return window.abrirEditarCarrito(id); if(typeof abrirEditarCarrito==='function')return abrirEditarCarrito(id); alert('No encontré la función de edición del carrito.')}catch(e){alert('No pude abrir edición: '+(e.message||e));}};
+  window.hc152ToggleModoCompra=function(){modoCompra=!modoCompra; repintar();};
+  window.hc152ToggleMarcado=function(id){id=String(id||''); if(!id)return; if(marcados.has(id))marcados.delete(id); else marcados.add(id); repintar();};
+
+  function lineasTicket(txt){
+    return String(txt||'').split(/\n+/).map(l=>l.trim()).filter(Boolean).map((linea,i)=>{
+      const nums=[...linea.matchAll(/(\d+[\.,]\d{2}|\d+)/g)].map(m=>m[1]);
+      const precioTxt=nums.length?nums[nums.length-1]:'0';
+      const precioNum=n(precioTxt);
+      let nombre=linea.replace(precioTxt,'').replace(/\s{2,}/g,' ').trim();
+      if(!nombre)nombre=linea;
+      return {i,linea,nombre,precio:precioNum,norm:norm(nombre)};
+    });
+  }
+  function compararTicket(tiendaSel, texto){
+    const items=dedupe(cart()).filter(x=>tienda(x)===tiendaSel);
+    const lines=lineasTicket(texto);
+    const usados=new Set();
+    const encontrados=[], extras=[];
+    items.forEach(it=>{
+      const ni=norm(nombre(it)); const pr=precio(it); let best=null,score=0;
+      lines.forEach(l=>{if(usados.has(l.i))return; let s=0; if(l.norm.includes(ni)||ni.includes(l.norm))s+=70; ni.split(' ').filter(w=>w.length>2).forEach(w=>{if(l.norm.includes(w))s+=8}); if(pr>0&&l.precio>0&&Math.abs(pr-l.precio)<=Math.max(2,pr*.08))s+=20; if(s>score){score=s;best=l;}});
+      if(best&&score>=45){usados.add(best.i); encontrados.push({item:it,linea:best,score});}
+    });
+    lines.forEach(l=>{if(!usados.has(l.i))extras.push(l);});
+    const faltantes=items.filter(it=>!encontrados.some(e=>rid(e.item)===rid(it)));
+    return {items,lines,encontrados,faltantes,extras};
+  }
+  function modalHTML(titulo,body){return `<div class="hc152-modal" id="hc152Modal"><div class="hc152-card"><h3>${titulo}</h3>${body}</div></div>`}
+  window.hc152Cerrar=function(){const m=document.getElementById('hc152Modal'); if(m)m.remove();};
+  window.hc152AbrirTicket=function(tiendaSel){
+    tiendaSel=String(tiendaSel||'Sin tienda');
+    const body=`<p class="muted">Toma foto del ticket para respaldo y pega aquí el texto leído. Esta primera integración valida contra el carrito; no confirma inventario hasta usar el botón Confirmar compra.</p>
+    <input type="file" accept="image/*" capture="environment" id="hc152FotoTicket"><textarea id="hc152TextoTicket" placeholder="Pega o escribe líneas del ticket. Ejemplo:\nAGUACATE 69.99\nCHILE HABANERO 70.00"></textarea>
+    <div class="hc152-actions"><button onclick="hc152ValidarTicket('${esc(tiendaSel)}')">🔎 Comparar con carrito ${esc(tiendaSel)}</button><button class="gris" onclick="hc152Cerrar()">Cerrar</button></div><div id="hc152Resultado" class="hc152-result"></div>`;
+    document.body.insertAdjacentHTML('beforeend',modalHTML('🧾 Leer / validar ticket · '+esc(tiendaSel),body));
   };
+  window.hc152ValidarTicket=function(tiendaSel){
+    const txt=document.getElementById('hc152TextoTicket')?.value||''; const r=compararTicket(String(tiendaSel||'Sin tienda'),txt); const box=document.getElementById('hc152Resultado'); if(!box)return;
+    box.innerHTML=`<div><span class="hc152-pill hc152-ok">${r.encontrados.length} coinciden</span><span class="hc152-pill hc152-warn">${r.faltantes.length} faltan</span><span class="hc152-pill hc152-danger">${r.extras.length} extras/nuevos</span></div>
+    <h4>✅ Coinciden</h4>${r.encontrados.map(e=>`<div class="item"><b>${esc(nombre(e.item))}</b><br><span class="muted">Ticket: ${esc(e.linea.linea)} · confianza ${Math.min(100,e.score)}%</span></div>`).join('')||'<p class="muted">Sin coincidencias.</p>'}
+    <h4>⚠️ En carrito pero no aparece en ticket</h4>${r.faltantes.map(x=>`<div class="item"><b>${esc(nombre(x))}</b><br><button class="gris mini" onclick="hc152DejarPendiente('${esc(rid(x))}')">📅 Dejar pendiente</button></div>`).join('')||'<p class="muted">Nada pendiente.</p>'}
+    <h4>🆕 En ticket pero no estaba en carrito</h4>${r.extras.map(x=>`<div class="item"><b>${esc(x.nombre)}</b> $${fmt(x.precio)}<br><button class="azul mini" onclick="hc152AgregarLineaTicket('${esc(tiendaSel)}',${x.i})">➕ Agregar al carrito</button></div>`).join('')||'<p class="muted">Sin extras.</p>'}`;
+    window.HC152_LINEAS_TICKET=r.lines;
+  };
+  window.hc152AgregarLineaTicket=async function(tiendaSel,i){
+    const l=(window.HC152_LINEAS_TICKET||[]).find(x=>Number(x.i)===Number(i)); if(!l)return alert('No encontré esa línea.');
+    const nombreProd=prompt('Nombre correcto del producto:',l.nombre); if(!nombreProd)return;
+    const marca=prompt('Marca (opcional):','')||'';
+    const nombreFinal=marca.trim()?`${nombreProd.trim()} ${marca.trim()}`:nombreProd.trim();
+    const unidad=prompt('Unidad:', 'Pza')||'Pza';
+    const cantidad=n(prompt('Cantidad:', '1'))||1;
+    const precioUnit=n(prompt('Precio unitario:', String(l.precio||0)));
+    try{
+      let prod={id:null,nombre:nombreFinal,unidad,precio:precioUnit,tienda_preferida:tiendaSel,categoria:'Sin categoría'};
+      if(typeof window.crearProductoNuevo==='function')prod=await window.crearProductoNuevo({nombre:nombreFinal,cantidad:0,unidad,precio:precioUnit,tienda:tiendaSel,categoria_texto:'Sin categoría'});
+      if(typeof window.insertarCarritoNuevo==='function')await window.insertarCarritoNuevo(prod,{nombre:nombreFinal,cantidad,unidad,precio:precioUnit,tienda:tiendaSel,categoria:'Sin categoría',nota:'Agregado desde ticket'});
+      try{if(typeof cargarTodo==='function')await cargarTodo()}catch(e){} repintar(); alert('Agregado al carrito.');
+    }catch(e){alert('No pude agregar: '+(e.message||e));}
+  };
+  window.hc152DejarPendiente=function(id){marcados.delete(String(id)); alert('Queda pendiente en este carrito. No se suma al inventario hasta confirmar compra.'); repintar();};
+
+  window.hc152AgregarConMarca=async function(tiendaSel){
+    const prodBase=prompt('Producto:', ''); if(!prodBase)return;
+    const marca=prompt('Marca:', '')||'';
+    const nombreFinal=marca.trim()?`${prodBase.trim()} ${marca.trim()}`:prodBase.trim();
+    const unidad=prompt('Unidad:', 'Pza')||'Pza';
+    const cantidad=n(prompt('Cantidad:', '1'))||1;
+    const precioUnit=n(prompt('Precio unitario:', '0'));
+    try{
+      let prod={id:null,nombre:nombreFinal,unidad,precio:precioUnit,tienda_preferida:tiendaSel,categoria:'Sin categoría'};
+      if(typeof window.crearProductoNuevo==='function')prod=await window.crearProductoNuevo({nombre:nombreFinal,cantidad:0,unidad,precio:precioUnit,tienda:tiendaSel,categoria_texto:'Sin categoría'});
+      if(typeof window.insertarCarritoNuevo==='function')await window.insertarCarritoNuevo(prod,{nombre:nombreFinal,cantidad,unidad,precio:precioUnit,tienda:tiendaSel,categoria:'Sin categoría',nota:marca?('Marca: '+marca):''});
+      try{if(typeof cargarTodo==='function')await cargarTodo()}catch(e){} repintar(); alert('Producto con marca agregado al carrito.');
+    }catch(e){alert('No pude agregar con marca: '+(e.message||e));}
+  };
+
   const oldMostrar=window.mostrarCarrito;
   window.mostrarCarrito=function(){
-    const cont=document.getElementById('listaCarrito');
-    const totalEl=document.getElementById('totalCarrito');
+    const cont=document.getElementById('listaCarrito'); const totalEl=document.getElementById('totalCarrito');
     if(!cont){return typeof oldMostrar==='function'?oldMostrar.apply(this,arguments):undefined;}
-    const lista=dedupe(cart());
-    try{window.carrito=lista}catch(e){} try{carrito=lista}catch(e){} try{carritoActual=lista}catch(e){}
-    const total=lista.reduce((s,x)=>s+(n(x.cantidad)||1)*precio(x),0);
-    if(totalEl)totalEl.textContent=fmt(total);
-    actualizarTotalesCarrito14();
-    const grupos=gruposTienda(lista);
-    if(!grupos.length){cont.innerHTML='<div class="hc1417-empty">🛒 Carrito vacío. Cuando agregues productos, aparecerán separados por tienda.</div>';return;}
+    const lista=dedupe(cart()); try{window.carrito=lista}catch(e){} try{carrito=lista}catch(e){} try{carritoActual=lista}catch(e){}
+    const total=lista.reduce((s,x)=>s+(n(x.cantidad)||1)*precio(x),0); if(totalEl)totalEl.textContent=fmt(total); actualizarTotalesCarrito14();
+    const grupos=gruposTienda(lista); if(!grupos.length){cont.innerHTML='<div class="hc1417-empty">🛒 Carrito vacío. Cuando agregues productos, aparecerán separados por tienda.</div>';return;}
     cont.innerHTML=grupos.map(([t,items])=>{
-      const tot=items.reduce((s,x)=>s+(n(x.cantidad)||1)*precio(x),0);
-      return `<div class="hc1417-store-cart">
+      const pendientes=items.filter(x=>!marcados.has(String(rid(x)))); const tomados=items.filter(x=>marcados.has(String(rid(x)))); const orden=modoCompra?[...pendientes,...tomados]:items;
+      const tot=items.reduce((s,x)=>s+(n(x.cantidad)||1)*precio(x),0); const totalTomado=tomados.reduce((s,x)=>s+(n(x.cantidad)||1)*precio(x),0); const pct=items.length?Math.round((tomados.length/items.length)*100):0;
+      const row=x=>{const id=rid(x); const cant=n(x.cantidad)||1; const pr=precio(x); const marcado=marcados.has(String(id)); return `<div class="hc1417-row ${marcado?'hc152-row-marked':''}"><div class="hc1417-row-title">${esc(nombre(x))}<small>${esc(x.unidad||'')}</small></div><div>${cant}</div><div>$${fmt(pr)}</div><div class="hc1417-total">$${fmt(cant*pr)}</div><div class="hc1417-actions">${modoCompra?`<button type="button" class="hc152-mark-btn ${marcado?'off':''}" onclick="hc152ToggleMarcado('${esc(id)}')">${marcado?'↩️':'🛒'}</button>`:`<button type="button" class="azul hc1418-edit-btn" onclick="hc1418AbrirEditarCarrito('${esc(id)}')">✏️</button><button type="button" class="rojo hc1418-del-btn" onclick="hc1417QuitarItem('${esc(id)}')">×</button>`}</div></div>`};
+      const sep=modoCompra&&tomados.length?`<div class="hc152-section-title">✅ Ya en carrito físico</div>`:'';
+      return `<div class="hc1417-store-cart ${modoCompra?'hc152-buy-on':''}">
         <div class="hc1417-store-head"><div><b>🏪 Carrito ${esc(t)}</b><small>${items.length} producto(s)</small></div><div class="hc1417-store-total">$${fmt(tot)}</div></div>
-        <div class="hc1417-store-list">${items.map(x=>{const id=rid(x); const cant=n(x.cantidad)||1; const pr=precio(x); return `<div class="hc1417-row"><div class="hc1417-row-title">${esc(nombre(x))}<small>${esc(x.unidad||'')}</small></div><div>${cant}</div><div>$${fmt(pr)}</div><div class="hc1417-total">$${fmt(cant*pr)}</div><div class="hc1417-actions"><button type="button" class="azul hc1418-edit-btn" onclick="hc1418AbrirEditarCarrito('${esc(id)}')">✏️</button><button type="button" class="rojo hc1418-del-btn" onclick="hc1417QuitarItem('${esc(id)}')">×</button></div></div>`}).join('')}</div>
+        ${modoCompra?`<div class="hc152-store-summary"><div><small>Pendientes</small>${pendientes.length}</div><div><small>Tomados</small>$${fmt(totalTomado)}</div><div><small>Avance</small>${pct}%</div></div>`:''}
+        <div class="hc1417-store-list">${modoCompra?`<div class="hc152-section-title">⏳ Pendientes</div>${pendientes.map(row).join('')||'<div class="hc1417-empty">Sin pendientes.</div>'}${sep}${tomados.map(row).join('')}`:orden.map(row).join('')}</div>
+        <div class="hc1417-store-tools"><button type="button" onclick="hc152ToggleModoCompra()">${modoCompra?'↩️ Salir modo compra':'🛒 Modo compra'}</button><button type="button" onclick="hc152AbrirTicket('${esc(t)}')">🧾 Leer / validar ticket</button><button type="button" onclick="hc152AgregarConMarca('${esc(t)}')">🏷️ Agregar con marca</button></div>
         <button type="button" class="hc1417-confirm" onclick="hc1417ConfirmarTienda('${esc(t)}')">✅ Confirmar compra de ${esc(t)}</button>
       </div>`;
     }).join('');
   };
   try{mostrarCarrito=window.mostrarCarrito}catch(e){}
   const oldAct=window.actualizarPantalla;
-  window.actualizarPantalla=function(){
-    const r=typeof oldAct==='function'?oldAct.apply(this,arguments):undefined;
-    try{actualizarTotalesCarrito14()}catch(e){}
-    return r;
-  };
+  window.actualizarPantalla=function(){const r=typeof oldAct==='function'?oldAct.apply(this,arguments):undefined; try{actualizarTotalesCarrito14()}catch(e){} return r;};
   window.hc1418ActualizarTotalesCarrito=actualizarTotalesCarrito14;
   setTimeout(()=>{try{actualizarTotalesCarrito14(); if(typeof mostrarCarrito==='function')mostrarCarrito();}catch(e){}},800);
-  setInterval(()=>{try{actualizarTotalesCarrito14()}catch(e){}},5000);
 })();
 </script>
-
 
 <!-- HC 14.21 PARTE 1: optimización de recargas pesadas -->
 <script id="hc1421-optimizacion-parte1">
