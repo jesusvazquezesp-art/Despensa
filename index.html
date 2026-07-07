@@ -24795,6 +24795,161 @@ button.hc-btn-procesando{opacity:.72!important;filter:grayscale(.15)!important;p
   setInterval(instalar,3000);
 })();
 </script>
+
+
+<!-- =========================================================
+HomeControl 14.6 · Fase 1 y 2 Supabase ligero
+Objetivo: bajar egress sin rediseñar la app.
+- Fase 1: cargar menos columnas/registros donde se puede.
+- Fase 2: carga diferida de historial pesado para reportes.
+- No cambia tablas, no requiere SQL, no guarda datos del hogar en teléfono.
+========================================================= -->
+<script id="hc-14-6-supabase-fase1-2">
+(function(){
+  if(window.HC146_SUPABASE_FASE12)return;
+  window.HC146_SUPABASE_FASE12=true;
+
+  const ST={
+    cargas:0,
+    evitadas:0,
+    ligeras:0,
+    pesadas:0,
+    ultima:0,
+    cargando:false,
+    heavy:false,
+    log:[]
+  };
+  window.HC146_STATS=ST;
+
+  function now(){return Date.now()}
+  function log(msg){
+    const t=new Date().toLocaleTimeString('es-MX');
+    ST.log.unshift(`${t} · ${msg}`);
+    ST.log=ST.log.slice(0,40);
+    try{console.info('[HC14.6]',msg)}catch(e){}
+  }
+  function cli(){try{return (typeof db!=='undefined'&&db)?db:window.db}catch(e){return window.db||null}}
+  function setArr(name,val){try{window[name]=Array.isArray(val)?val:[]}catch(e){} try{eval(name+'=window["'+name+'"]')}catch(e){}}
+  function getArr(name){try{return Array.isArray(window[name])?window[name]:[]}catch(e){return []}}
+  function syncUI(){try{if(typeof actualizarPantalla==='function')actualizarPantalla()}catch(e){} try{if(typeof setSync==='function')setSync('Estamos en línea 😊 · modo ligero 14.6')}catch(e){}}
+
+  async function q(tabla,cols,opts){
+    const c=cli(); if(!c)throw new Error('No hay conexión con Supabase');
+    opts=opts||{};
+    let r=c.from(tabla).select(cols||'*');
+    if(opts.eq) opts.eq.forEach(x=>{r=r.eq(x[0],x[1])});
+    if(opts.order) r=r.order(opts.order[0],opts.order[1]||{});
+    if(opts.limit) r=r.limit(opts.limit);
+    const res=await r;
+    if(res.error)throw res.error;
+    return res.data||[];
+  }
+
+  async function cargarLigero(force){
+    const c=cli(); if(!c)return;
+    if(ST.cargando)return;
+    const edad=now()-ST.ultima;
+    if(!force && ST.ultima && edad<60000){
+      ST.evitadas++;
+      log('cargarTodo evitado: datos recientes en memoria.');
+      syncUI();
+      return;
+    }
+    ST.cargando=true;
+    ST.cargas++; ST.ligeras++;
+    try{
+      try{if(typeof setSync==='function')setSync('Cargando datos ligeros 14.6...')}catch(e){}
+      const [p,cat,u,car,gcat,gh,pg,cms,cos]=await Promise.all([
+        q('despensa_productos','*',{order:['nombre']}),
+        q('despensa_categorias','id,nombre,icono,color,activo',{order:['nombre']}).catch(()=>[]),
+        q('despensa_usuarios','id,usuario,nombre,rol,activo',{order:['usuario']}).catch(()=>[]),
+        q('home_carrito_compartido','id,producto_id,nombre,categoria,cantidad,unidad,precio,precio_estimado,tienda,total,estado,activo,created_at',{eq:[['activo',true],['estado','pendiente']],order:['created_at',{ascending:true}],limit:300}).catch(()=>[]),
+        q('home_gastos_categorias','id,nombre,icono,color,activo',{order:['nombre']}).catch(()=>[]),
+        q('home_gastos','id,nombre,categoria,monto,fecha_proximo_pago,activo,notas,created_at',{eq:[['activo',true]],order:['fecha_proximo_pago',{ascending:true}]}).catch(()=>[]),
+        q('home_gastos_pagos','id,gasto_id,monto,fecha_pago,fecha,categoria,tipo,metodo,notas,created_at',{order:['fecha_pago',{ascending:false}],limit:150}).catch(()=>[]),
+        q('despensa_compras','id,producto_id,producto,tienda,cantidad,precio,total,fecha,fecha_compra,categoria,fue_oferta,oferta,es_oferta,created_at',{order:['fecha',{ascending:false}],limit:250}).catch(()=>[]),
+        q('despensa_consumos','id,producto_id,producto,cantidad,fecha,nota,created_at',{order:['fecha',{ascending:false}],limit:150}).catch(()=>[])
+      ]);
+      setArr('productos',p); setArr('categorias',cat); setArr('usuarios',u);
+      setArr('carrito',car.map(x=>({tmp:x.id,cloud_id:x.id,id:x.id,producto_id:x.producto_id,nombre:x.nombre,producto:x.nombre,categoria:x.categoria,cantidad:x.cantidad,unidad:x.unidad,precio:x.precio||x.precio_estimado,precio_estimado:x.precio_estimado||x.precio,tienda:x.tienda,total:x.total,estado:x.estado,activo:x.activo,created_at:x.created_at})));
+      setArr('gastosCategorias',gcat); setArr('gastosHogar',gh); setArr('pagosHogar',pg);
+      setArr('compras',cms); setArr('consumos',cos);
+      ST.ultima=now(); ST.heavy=false;
+      log(`carga ligera: productos ${p.length}, compras ${cms.length}, consumos ${cos.length}, carrito ${car.length}`);
+      syncUI();
+    }catch(e){
+      console.warn('HC14.6 carga ligera falló, usando cargarTodo original si existe',e);
+      if(window.HC146_cargarTodoOriginal) await window.HC146_cargarTodoOriginal();
+    }finally{ST.cargando=false;}
+  }
+
+  async function cargarHistorialPesado(force){
+    if(ST.heavy && !force){ST.evitadas++; log('historial pesado evitado: ya estaba en memoria.'); return;}
+    const c=cli(); if(!c)return;
+    ST.pesadas++;
+    try{
+      try{if(typeof setSync==='function')setSync('Cargando historial para reportes...')}catch(e){}
+      const [cms,cos,pg]=await Promise.all([
+        q('despensa_compras','id,producto_id,producto,tienda,cantidad,precio,total,fecha,fecha_compra,categoria,fue_oferta,oferta,es_oferta,created_at',{order:['fecha',{ascending:false}],limit:1000}).catch(()=>getArr('compras')),
+        q('despensa_consumos','id,producto_id,producto,cantidad,fecha,nota,created_at',{order:['fecha',{ascending:false}],limit:500}).catch(()=>getArr('consumos')),
+        q('home_gastos_pagos','id,gasto_id,monto,fecha_pago,fecha,categoria,tipo,metodo,notas,created_at',{order:['fecha_pago',{ascending:false}],limit:500}).catch(()=>getArr('pagosHogar'))
+      ]);
+      setArr('compras',cms); setArr('consumos',cos); setArr('pagosHogar',pg);
+      ST.heavy=true;
+      log(`historial cargado bajo demanda: compras ${cms.length}, consumos ${cos.length}, pagos ${pg.length}`);
+      syncUI();
+    }catch(e){console.warn('HC14.6 historial pesado falló',e)}
+  }
+
+  // Guardamos función original y sustituimos cargarTodo por carga ligera con cache.
+  if(typeof window.cargarTodo==='function' && !window.HC146_cargarTodoOriginal){
+    window.HC146_cargarTodoOriginal=window.cargarTodo;
+  }
+  window.cargarTodo=async function(){return cargarLigero(false)};
+  try{cargarTodo=window.cargarTodo}catch(e){}
+
+  window.hc146SincronizarLigero=()=>cargarLigero(true);
+  window.hc146CargarHistorial=()=>cargarHistorialPesado(true);
+  window.hc146Estado=function(){
+    alert(`HomeControl 14.6\n\nCargas: ${ST.cargas}\nEvitadas: ${ST.evitadas}\nLigeras: ${ST.ligeras}\nHistorial bajo demanda: ${ST.pesadas}\nProductos memoria: ${getArr('productos').length}\nCompras memoria: ${getArr('compras').length}\nConsumos memoria: ${getArr('consumos').length}\n\nÚltimos eventos:\n${ST.log.slice(0,8).join('\n')}`);
+  };
+
+  // Carga diferida: al entrar a pantallas que sí necesitan historial, carga datos más amplios una sola vez.
+  const panelesPesados=/reportes|preciosIA|preciosIAPanel|aprendizaje|comparador|backup/i;
+  const oldVer=window.ver;
+  if(typeof oldVer==='function' && !oldVer.__hc146){
+    window.ver=function(id){
+      const r=oldVer.apply(this,arguments);
+      if(panelesPesados.test(String(id||''))) setTimeout(()=>cargarHistorialPesado(false),120);
+      return r;
+    };
+    window.ver.__hc146=true;
+    try{ver=window.ver}catch(e){}
+  }
+  const oldMostrar=window.mostrarPanel;
+  if(typeof oldMostrar==='function' && !oldMostrar.__hc146){
+    window.mostrarPanel=function(id){
+      const r=oldMostrar.apply(this,arguments);
+      if(panelesPesados.test(String(id||''))) setTimeout(()=>cargarHistorialPesado(false),120);
+      return r;
+    };
+    window.mostrarPanel.__hc146=true;
+    try{mostrarPanel=window.mostrarPanel}catch(e){}
+  }
+
+  // Evita recargas por clics repetidos si los datos acaban de cargarse.
+  document.addEventListener('click',function(ev){
+    const b=ev.target.closest&&ev.target.closest('button'); if(!b)return;
+    const tx=(b.textContent||'').toLowerCase();
+    if(/sincronizar todo|actualizar todo|recargar todo/.test(tx)){
+      ev.preventDefault(); ev.stopImmediatePropagation(); cargarLigero(true);
+    }
+  },true);
+
+  log('Optimización 14.6 fase 1 y 2 activa.');
+})();
+</script>
+
 </html>
 <!-- HC 13.8.80: ajuste final texto del índice + activo más visible -->
 <style>
