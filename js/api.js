@@ -1,52 +1,173 @@
-const API = "http://192.168.100.73:3000";
+const API = localStorage.getItem("hcServidor") || "http://192.168.100.73:3000";
 
-async function apiGET(ruta) {
+class HCQuery {
 
-    const r = await fetch(API + ruta);
+    constructor(tabla){
+        this.tabla = tabla;
+        this.filtros = [];
+        this.orden = null;
+        this.limite = null;
+    }
 
-    if (!r.ok)
-        throw new Error("Error " + r.status);
+    eq(campo,valor){
+        this.filtros.push({
+            tipo:"eq",
+            campo,
+            valor
+        });
+        return this;
+    }
 
-    return await r.json();
+    order(campo,opciones={}){
+        this.orden={
+            campo,
+            asc:opciones.ascending!==false
+        };
+        return this;
+    }
 
-}
+    limit(n){
+        this.limite=n;
+        return this;
+    }
 
-async function apiPOST(ruta, datos) {
+    async select(columnas="*"){
 
-    const r = await fetch(API + ruta, {
+        const r=await fetch(API+"/query",{
 
-        method: "POST",
+            method:"POST",
 
-        headers: {
-            "Content-Type": "application/json"
-        },
+            headers:{
+                "Content-Type":"application/json"
+            },
 
-        body: JSON.stringify(datos)
+            body:JSON.stringify({
 
-    });
+                tabla:this.tabla,
 
-    if (!r.ok)
-        throw new Error("Error " + r.status);
+                columnas,
 
-    return await r.json();
+                filtros:this.filtros,
 
-}
+                orden:this.orden,
 
-const api = {
+                limite:this.limite
 
-    productos: {
+            })
 
-        listar() {
+        });
 
-            return apiGET("/productos");
+        return await r.json();
 
-        },
+    }
 
-        guardar(producto) {
+    async insert(datos){
 
-            return apiPOST("/productos", producto);
+        const r=await fetch(API+"/insert",{
+
+            method:"POST",
+
+            headers:{
+                "Content-Type":"application/json"
+            },
+
+            body:JSON.stringify({
+
+                tabla:this.tabla,
+
+                datos
+
+            })
+
+        });
+
+        return await r.json();
+
+    }
+
+    async update(datos){
+
+        const r=await fetch(API+"/update",{
+
+            method:"POST",
+
+            headers:{
+                "Content-Type":"application/json"
+            },
+
+            body:JSON.stringify({
+
+                tabla:this.tabla,
+
+                datos,
+
+                filtros:this.filtros
+
+            })
+
+        });
+
+        return await r.json();
+
+    }
+
+    async delete(){
+
+        const r=await fetch(API+"/delete",{
+
+            method:"POST",
+
+            headers:{
+                "Content-Type":"application/json"
+            },
+
+            body:JSON.stringify({
+
+                tabla:this.tabla,
+
+                filtros:this.filtros
+
+            })
+
+        });
+
+        return await r.json();
+
+    }
+
+    async maybeSingle(){
+
+        const r=await this.limit(1).select("*");
+
+        if(r.data && r.data.length){
+
+            return {
+
+                data:r.data[0],
+
+                error:null
+
+            };
 
         }
+
+        return {
+
+            data:null,
+
+            error:r.error||null
+
+        };
+
+    }
+
+}
+
+window.api={
+
+    from(tabla){
+
+        return new HCQuery(tabla);
 
     }
 
