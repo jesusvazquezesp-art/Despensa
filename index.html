@@ -396,21 +396,30 @@ setTimeout(()=>{try{actualizarReportesInteligentes();actualizarComidaFuera&&actu
 let hcCacheReportes = {despensa_compras:[], home_gastos:[], home_gastos_pagos:[], cargado:false};
 
 async function hcCargarReportesSupabase(){
-  if(typeof db === 'undefined') return;
+
+  if (typeof db === "undefined" || db === null) {
+      console.log("Supabase no disponible, usando servidor local.");
+      return;
+  }
+
   try{
-    const [c,g,p] = await Promise.all([
-      db.from('despensa_compras').select('*'),
-      db.from('home_gastos').select('*'),
-      db.from('home_gastos_pagos').select('*')
-    ]);
-    if(!c.error) hcCacheReportes.despensa_compras = c.data || [];
-    if(!g.error) hcCacheReportes.home_gastos = g.data || [];
-    if(!p.error) hcCacheReportes.home_gastos_pagos = p.data || [];
-    hcCacheReportes.cargado = true;
+      const [c,g,p] = await Promise.all([
+          db.from("despensa_compras").select("*"),
+          db.from("home_gastos").select("*"),
+          db.from("home_gastos_pagos").select("*")
+      ]);
+
+      if(!c.error) hcCacheReportes.despensa_compras = c.data || [];
+      if(!g.error) hcCacheReportes.home_gastos = g.data || [];
+      if(!p.error) hcCacheReportes.home_gastos_pagos = p.data || [];
+
+      hcCacheReportes.cargado = true;
+
   }catch(e){
-    console.warn('No se pudieron cargar reportes Supabase', e);
+      console.warn("No se pudieron cargar reportes Supabase", e);
   }
 }
+    
 
 function hcFecha(f){
   if(!f) return null;
@@ -8465,20 +8474,34 @@ setTimeout(()=>{try{actualizarReportesInteligentes();actualizarComidaFuera&&actu
 let hcCacheReportes = {despensa_compras:[], home_gastos:[], home_gastos_pagos:[], cargado:false};
 
 async function hcCargarReportesSupabase(){
-  if(typeof db === 'undefined') return;
-  try{
-    const [c,g,p] = await Promise.all([
-      db.from('despensa_compras').select('*'),
-      db.from('home_gastos').select('*'),
-      db.from('home_gastos_pagos').select('*')
-    ]);
-    if(!c.error) hcCacheReportes.despensa_compras = c.data || [];
-    if(!g.error) hcCacheReportes.home_gastos = g.data || [];
-    if(!p.error) hcCacheReportes.home_gastos_pagos = p.data || [];
-    hcCacheReportes.cargado = true;
-  }catch(e){
-    console.warn('No se pudieron cargar reportes Supabase', e);
-  }
+
+    if (typeof db === "undefined" || db === null){
+        console.log("Supabase no disponible, se omiten reportes.");
+        return;
+    }
+
+    try{
+
+        const [c,g,p] = await Promise.all([
+
+            db.from("despensa_compras").select("*"),
+            db.from("home_gastos").select("*"),
+            db.from("home_gastos_pagos").select("*")
+
+        ]);
+
+        if(!c.error) hcCacheReportes.despensa_compras = c.data || [];
+        if(!g.error) hcCacheReportes.home_gastos = g.data || [];
+        if(!p.error) hcCacheReportes.home_gastos_pagos = p.data || [];
+
+        hcCacheReportes.cargado = true;
+
+    }catch(e){
+
+        console.warn("No se pudieron cargar reportes Supabase",e);
+
+    }
+
 }
 
 function hcFecha(f){
