@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<script src="js/api.js"></script>
+
 <script>
 /* HomeControl 13.7.8 - Limpieza local estricta.
    Datos del hogar NO se leen ni se guardan en el teléfono.
@@ -108,7 +108,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>HomeControl 15.2 - Ticket y modo compra limpio</title>
-<!-- <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">-->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
 let comidaFuera = [];
 async function cargarComidaFuera(){
   // Se guarda como gasto del hogar categoría "Comida fuera"
@@ -5615,7 +5615,12 @@ body.dark #hc10Panel #hc10Log .muted{
 </div>
 <p>Consumo inteligente para el hogar</p></header>
 <div class="container">
-  <div id="configBox" class="card"><h2>⚙️ Conexión Supabase</h2><p class="muted">Pega tu URL y ANON KEY. Se guardan sólo en este navegador.</p><input id="supabaseUrl" placeholder="SUPABASE URL"><input id="supabaseKey" placeholder="SUPABASE ANON KEY"><button onclick="runBtn(this, 'Conectando con servidor...', guardarConfig)">Guardar conexión</button></div>
+  <div id="configBox" class="card">
+<h2>🏠 Servidor Local HomeControl</h2>
+<p class="muted">Escribe la dirección del servidor local.</p>
+<input id="servidorLocal" placeholder="http://192.168.100.73:3000">
+<button onclick="runBtn(this,'Conectando...',guardarConfig)">Conectar</button>
+</div>
   <div id="loginBox" class="card login-card oculto"><h2>🔐 Acceso</h2><input id="usuario" placeholder="Usuario"><input id="password" type="password" placeholder="Contraseña"><button onclick="runBtn(this, 'Entrando, espere servidor...', login)">Entrar</button><button class="gris" onclick="mostrarConfig()">Cambiar conexión Supabase</button><p class="muted">Inicial: <br>La sesión queda abierta hasta que presiones Salir.</p></div>
   <div id="app" class="oculto">
     <div class="card user-status-card">
@@ -6244,90 +6249,179 @@ function cantidadSugeridaTexto(p){const r=recomendacionFarmacia(p); if(r&&r.comp
 
 function semanaKey(fecha){const d=new Date(fecha+'T00:00:00');const tmp=new Date(d);tmp.setDate(tmp.getDate()+4-(tmp.getDay()||7));const y=tmp.getFullYear();const start=new Date(y,0,1);const w=Math.ceil((((tmp-start)/86400000)+1)/7);return `${y} - Semana ${String(w).padStart(2,'0')}`}
 function mesKey(fecha){const d=new Date(fecha+'T00:00:00');return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}function anioKey(fecha){return String(new Date(fecha+'T00:00:00').getFullYear())}
-window.addEventListener('load',()=>{if(localStorage.getItem('darkDespensa')==='true')document.body.classList.add('dark');const url=localStorage.getItem('despensaSupabaseUrl')||'';const key=localStorage.getItem('despensaSupabaseKey')||'';supabaseUrl.value=url;supabaseKey.value=key;carrito=[];localStorage.removeItem('despensaCarrito');pospuestos=JSON.parse(localStorage.getItem('despensaPospuestos')||'{}');if(url&&key)iniciarSupabase(url,key)});
-window.addEventListener('popstate',(ev)=>{if(!fotoModal.classList.contains('oculto')){fotoModal.classList.add('oculto');return}const panel=(ev.state&&ev.state.panel)||'inventario';if(document.getElementById(panel)){mostrarPanel(panel)}else{mostrarPanel('inventario')}});
+
+window.addEventListener('load', async () => {
+
+    if (localStorage.getItem('darkDespensa') === 'true')
+        document.body.classList.add('dark');
+
+    carrito = [];
+    localStorage.removeItem('despensaCarrito');
+    pospuestos = JSON.parse(localStorage.getItem('despensaPospuestos') || '{}');
+
+    const servidor =
+        localStorage.getItem('hcServidor') ||
+        'http://192.168.100.73:3000';
+
+    localStorage.setItem('hcServidor', servidor);
+
+    try {
+
+        const r = await fetch(servidor + '/ping');
+
+        if (!r.ok) throw new Error();
+
+        configBox.classList.add('oculto');
+        loginBox.classList.remove('oculto');
+
+    } catch (e) {
+
+        configBox.classList.remove('oculto');
+        loginBox.classList.add('oculto');
+
+    }
+
+});
 
 function guardarConfig(){
 
-    localStorage.setItem("hcServidor","http://192.168.100.73:3000");
+    const servidor =
+        document.getElementById("servidorLocal").value.trim();
 
-    configBox.classList.add("oculto");
+    if(!servidor)
+        return alert("Escribe la dirección del servidor.");
 
-    loginBox.classList.remove("oculto");
+    localStorage.setItem("hcServidor", servidor);
 
-    iniciarServidor();
+    location.reload();
 
 }
 
-{
-    db = api;
-    configBox.classList.add('oculto');
-    loginBox.classList.remove('oculto');
-    reanudarSesion();
+function mostrarConfig(){
+
+    configBox.classList.remove("oculto");
+    loginBox.classList.add("oculto");
+    app.classList.add("oculto");
+
 }
-function mostrarConfig(){configBox.classList.remove('oculto');loginBox.classList.add('oculto');app.classList.add('oculto')}
+
 async function reanudarSesion(){const guardada=localStorage.getItem('despensaSesion');if(!guardada||!db)return;try{const s=JSON.parse(guardada);const {data,error}=await db.from('despensa_usuarios').select('*').eq('id',s.id).eq('activo',true).maybeSingle();if(error||!data){localStorage.removeItem('despensaSesion');return}sesion=data;usuarioActivo.textContent=`${data.nombre||data.usuario}`;loginBox.classList.add('oculto');app.classList.remove('oculto');iniciarNavegacionApp();await cargarTodo()}catch(e){localStorage.removeItem('despensaSesion')}}
-async function login(){if(!db)return alert('Primero configura Supabase');const u=usuario.value.trim(),p=password.value.trim();const {data,error}=await db.from('despensa_usuarios').select('*').eq('usuario',u).eq('password',p).eq('activo',true).maybeSingle();if(error)return alert('Error Supabase: '+error.message);if(!data)return alert('Usuario o contraseña incorrectos');sesion=data;localStorage.setItem('despensaSesion',JSON.stringify({id:data.id,usuario:data.usuario,nombre:data.nombre,rol:data.rol}));usuarioActivo.textContent=`${data.nombre||data.usuario}`;loginBox.classList.add('oculto');app.classList.remove('oculto');iniciarNavegacionApp();await cargarTodo()}function cerrarSesion(){localStorage.removeItem('despensaSesion');sesion=null;app.classList.add('oculto');loginBox.classList.remove('oculto');history.replaceState(null,'',location.pathname)}function toggleDarkMode(){document.body.classList.toggle('dark');localStorage.setItem('darkDespensa',document.body.classList.contains('dark'))}function iniciarNavegacionApp(){panelActual='asistente';history.replaceState({panel:'asistente'},'','#asistente');mostrarPanel('asistente')}function mostrarPanel(id){document.querySelectorAll('.panel').forEach(p=>p.classList.add('oculto'));document.getElementById(id).classList.remove('oculto');panelActual=id;actualizarPantalla()}function ver(id){if(id===panelActual)return;mostrarPanel(id);history.pushState({panel:id},'','#'+id)}
 
+async function login() {
+
+    const servidor = localStorage.getItem("hcServidor");
+    const u = usuario.value.trim();
+    const p = password.value.trim();
+
+    const respuesta = await fetch(servidor + "/login", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            usuario: u,
+            password: p
+        })
+    });
+
+    const resultado = await respuesta.json();
+
+    if (!resultado.ok) {
+        return alert(resultado.mensaje || "Usuario o contraseña incorrectos");
+    }
+
+    const data = resultado.usuario;
+
+    sesion = data;
+
+    localStorage.setItem(
+        "despensaSesion",
+        JSON.stringify({
+            id: data.id,
+            usuario: data.usuario,
+            nombre: data.nombre,
+            rol: data.rol
+        })
+    );
+
+    usuarioActivo.textContent = `${data.nombre || data.usuario}`;
+
+    loginBox.classList.add("oculto");
+    app.classList.remove("oculto");
+
+    iniciarNavegacionApp();
+
+    await cargarTodo();
+
+}
+
+function cerrarSesion(){localStorage.removeItem('despensaSesion');sesion=null;app.classList.add('oculto');loginBox.classList.remove('oculto');history.replaceState(null,'',location.pathname)}function toggleDarkMode(){document.body.classList.toggle('dark');localStorage.setItem('darkDespensa',document.body.classList.contains('dark'))}function iniciarNavegacionApp(){panelActual='asistente';history.replaceState({panel:'asistente'},'','#asistente');mostrarPanel('asistente')}function mostrarPanel(id){document.querySelectorAll('.panel').forEach(p=>p.classList.add('oculto'));document.getElementById(id).classList.remove('oculto');panelActual=id;actualizarPantalla()}function ver(id){if(id===panelActual)return;mostrarPanel(id);history.pushState({panel:id},'','#'+id)}
 
 async function cargarTodo(){
 
     setSync("Cargando datos...");
 
-    try{
+    const servidor = localStorage.getItem("hcServidor");
 
-        // PRODUCTOS DESDE EL SERVIDOR LOCAL
-        const r = await fetch("http://192.168.100.73:3000/productos");
-        const pj = await r.json();
+    const [
+        productosR,
+        comprasR,
+        consumosR,
+        usuariosR,
+        categoriasR,
+        gastosCategoriasR,
+        gastosR,
+        pagosR
+    ] = await Promise.all([
 
-        productos = pj.ok ? (pj.data || []) : [];
+        fetch(servidor + "/productos"),
+        fetch(servidor + "/compras"),
+        fetch(servidor + "/consumos"),
+        fetch(servidor + "/usuarios"),
+        fetch(servidor + "/categorias"),
+        fetch(servidor + "/gastosCategorias"),
+        fetch(servidor + "/gastos"),
+        fetch(servidor + "/pagos")
 
-        // TODO LO DEMÁS SIGUE EN POSTGRES/SUPABASE POR EL MOMENTO
-        const [c,co,u,cat,gcat,gh,pg] = await Promise.all([
+    ]);
 
-            db.from("despensa_compras").select("*").order("fecha",{ascending:false}).limit(5000),
+    const [
+        productosJ,
+        comprasJ,
+        consumosJ,
+        usuariosJ,
+        categoriasJ,
+        gastosCategoriasJ,
+        gastosJ,
+        pagosJ
+    ] = await Promise.all([
 
-            db.from("despensa_consumos").select("*").order("fecha",{ascending:false}).limit(500),
+        productosR.json(),
+        comprasR.json(),
+        consumosR.json(),
+        usuariosR.json(),
+        categoriasR.json(),
+        gastosCategoriasR.json(),
+        gastosR.json(),
+        pagosR.json()
 
-            db.from("despensa_usuarios").select("*").order("usuario"),
+    ]);
 
-            db.from("despensa_categorias").select("*").order("nombre"),
+    productos = productosJ.data || [];
+    compras = comprasJ.data || [];
+    consumos = consumosJ.data || [];
+    usuarios = usuariosJ.data || [];
+    categorias = categoriasJ.data || [];
+    gastosCategorias = gastosCategoriasJ.data || [];
+    gastosHogar = gastosJ.data || [];
+    pagosHogar = pagosJ.data || [];
 
-            db.from("home_gastos_categorias").select("*").order("nombre"),
+    actualizarPantalla();
 
-            db.from("home_gastos")
-              .select("*, home_gastos_categorias(nombre, icono)")
-              .eq("activo",true)
-              .order("fecha_proximo_pago",{ascending:true}),
-
-            db.from("home_gastos_pagos")
-              .select("*")
-              .order("fecha_pago",{ascending:false})
-              .limit(1000)
-
-        ]);
-
-        compras = c.data || [];
-        consumos = co.data || [];
-        usuarios = u.data || [];
-        categorias = cat.data || [];
-        gastosCategorias = gcat.data || [];
-        gastosHogar = gh.data || [];
-        pagosHogar = pg.data || [];
-
-        actualizarPantalla();
-
-        setSync("Servidor local conectado 🟢");
-
-    }catch(err){
-
-        console.error(err);
-
-        alert("No pude conectar con el servidor local.");
-
-    }
+    setSync("Servidor local conectado 🟢");
 
 }
+
 function limpiarProductoForm(){nombreProducto.value='';categoriaProducto.value='';tipoControlProducto.value='mensual';cantidadProducto.value='';unidadProducto.value='';minimoProducto.value='';precioProducto.value='';tiendaPreferida.value='';notasProducto.value='';limpiarFarmaciaForm();fotoProducto.value='';fotoProductoBase64='';previewProducto.src='';previewProducto.classList.add('oculto');editandoId=null;btnProducto.textContent='➕ Agregar producto';btnCancelar.classList.add('oculto')}function cancelarEdicion(){limpiarProductoForm()}async function guardarProducto(){const item={nombre:nombreProducto.value.trim(),categoria:categoriaProducto.value.trim(),tipo_control:tipoControlProducto.value,perecedero:tipoControlProducto.value==='semanal',dias_cobertura:tipoControlProducto.value==='semanal'?7:30,cantidad:Number(cantidadProducto.value||0),unidad:unidadProducto.value.trim()||'pza',minimo:Number(minimoProducto.value||0),precio:Number(precioProducto.value||0),tienda_preferida:tiendaPreferida.value.trim(),notas:combinarNotasFarmacia(notasProducto.value.trim()),foto:fotoProductoBase64,actualizado:new Date().toISOString()};if(!item.nombre)return alert('Falta el nombre del producto');const clave=normalizarProductoNombre(item.nombre);const existente=productos.find(p=>normalizarProductoNombre(p.nombre)===clave && String(p.id)!==String(editandoId||''));if(existente){const msg=`Ya existe un producto llamado "${existente.nombre}".
 
 Para evitar duplicados, HomeControl no creará otro.
