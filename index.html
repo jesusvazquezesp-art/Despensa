@@ -10924,38 +10924,30 @@ body.dark .command-card .action-list .action-item{ background:rgba(15,23,42,.42)
 }
       
  
-      async function cargarCarritoOnline(){
+     async function cargarCarritoOnline(){
 
     if(cargando) return;
-
-    const c = await requireDb();
-
-    if(!c){
-        setCarrito([]);
-        try{ if(typeof mostrarCarrito==="function") mostrarCarrito(); }catch(e){}
-        try{ if(typeof actualizarPanelCarritoRapido==="function") actualizarPanelCarritoRapido(); }catch(e){}
-        return;
-    }
 
     cargando = true;
 
     try{
 
-        const {data,error}=await c
-            .from(TABLE)
-            .select("*")
-            .eq("activo",true)
-            .eq("estado","pendiente")
-            .order("created_at",{ascending:true});
+        const r = await fetch("http://192.168.100.73:3000/carrito");
+        const j = await r.json();
 
-        if(error) throw error;
+        setCarrito((j.data || []).map(rowToItem));
 
-        setCarrito((data||[]).map(rowToItem));
+        try{
+            if(typeof mostrarCarrito==="function")
+                mostrarCarrito();
+        }catch(e){}
 
-        try{ if(typeof mostrarCarrito==="function") mostrarCarrito(); }catch(e){}
-        try{ if(typeof actualizarPanelCarritoRapido==="function") actualizarPanelCarritoRapido(); }catch(e){}
+        try{
+            if(typeof actualizarPanelCarritoRapido==="function")
+                actualizarPanelCarritoRapido();
+        }catch(e){}
 
-        setNota(true,"☁️ Carrito cargado.");
+        setNota(true,"🟢 Carrito cargado desde servidor local");
 
     }finally{
 
