@@ -2,7 +2,6 @@
 <html lang="es">
 <head>
 <script src="js/api.js"></script>
-<script src="sync.js"></script>
 <script>
 /* HomeControl 13.7.8 - Limpieza local estricta.
    Datos del hogar NO se leen ni se guardan en el teléfono.
@@ -109,7 +108,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>HomeControl 15.2 - Ticket y modo compra limpio</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
+<!-- <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">-->
 let comidaFuera = [];
 async function cargarComidaFuera(){
   // Se guarda como gasto del hogar categoría "Comida fuera"
@@ -6247,7 +6246,26 @@ function semanaKey(fecha){const d=new Date(fecha+'T00:00:00');const tmp=new Date
 function mesKey(fecha){const d=new Date(fecha+'T00:00:00');return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}function anioKey(fecha){return String(new Date(fecha+'T00:00:00').getFullYear())}
 window.addEventListener('load',()=>{if(localStorage.getItem('darkDespensa')==='true')document.body.classList.add('dark');const url=localStorage.getItem('despensaSupabaseUrl')||'';const key=localStorage.getItem('despensaSupabaseKey')||'';supabaseUrl.value=url;supabaseKey.value=key;carrito=[];localStorage.removeItem('despensaCarrito');pospuestos=JSON.parse(localStorage.getItem('despensaPospuestos')||'{}');if(url&&key)iniciarSupabase(url,key)});
 window.addEventListener('popstate',(ev)=>{if(!fotoModal.classList.contains('oculto')){fotoModal.classList.add('oculto');return}const panel=(ev.state&&ev.state.panel)||'inventario';if(document.getElementById(panel)){mostrarPanel(panel)}else{mostrarPanel('inventario')}});
-function guardarConfig(){const url=supabaseUrl.value.trim(),key=supabaseKey.value.trim();if(!url||!key)return alert('Falta URL o ANON KEY');localStorage.setItem('despensaSupabaseUrl',url);localStorage.setItem('despensaSupabaseKey',key);iniciarSupabase(url,key)}function iniciarSupabase(url,key){db=supabase.createClient(url,key);configBox.classList.add('oculto');loginBox.classList.remove('oculto');reanudarSesion()}function mostrarConfig(){configBox.classList.remove('oculto');loginBox.classList.add('oculto');app.classList.add('oculto')}
+
+function guardarConfig(){
+
+    localStorage.setItem("hcServidor","http://192.168.100.73:3000");
+
+    configBox.classList.add("oculto");
+
+    loginBox.classList.remove("oculto");
+
+    iniciarServidor();
+
+}
+
+{
+    db = api;
+    configBox.classList.add('oculto');
+    loginBox.classList.remove('oculto');
+    reanudarSesion();
+}
+function mostrarConfig(){configBox.classList.remove('oculto');loginBox.classList.add('oculto');app.classList.add('oculto')}
 async function reanudarSesion(){const guardada=localStorage.getItem('despensaSesion');if(!guardada||!db)return;try{const s=JSON.parse(guardada);const {data,error}=await db.from('despensa_usuarios').select('*').eq('id',s.id).eq('activo',true).maybeSingle();if(error||!data){localStorage.removeItem('despensaSesion');return}sesion=data;usuarioActivo.textContent=`${data.nombre||data.usuario}`;loginBox.classList.add('oculto');app.classList.remove('oculto');iniciarNavegacionApp();await cargarTodo()}catch(e){localStorage.removeItem('despensaSesion')}}
 async function login(){if(!db)return alert('Primero configura Supabase');const u=usuario.value.trim(),p=password.value.trim();const {data,error}=await db.from('despensa_usuarios').select('*').eq('usuario',u).eq('password',p).eq('activo',true).maybeSingle();if(error)return alert('Error Supabase: '+error.message);if(!data)return alert('Usuario o contraseña incorrectos');sesion=data;localStorage.setItem('despensaSesion',JSON.stringify({id:data.id,usuario:data.usuario,nombre:data.nombre,rol:data.rol}));usuarioActivo.textContent=`${data.nombre||data.usuario}`;loginBox.classList.add('oculto');app.classList.remove('oculto');iniciarNavegacionApp();await cargarTodo()}function cerrarSesion(){localStorage.removeItem('despensaSesion');sesion=null;app.classList.add('oculto');loginBox.classList.remove('oculto');history.replaceState(null,'',location.pathname)}function toggleDarkMode(){document.body.classList.toggle('dark');localStorage.setItem('darkDespensa',document.body.classList.contains('dark'))}function iniciarNavegacionApp(){panelActual='asistente';history.replaceState({panel:'asistente'},'','#asistente');mostrarPanel('asistente')}function mostrarPanel(id){document.querySelectorAll('.panel').forEach(p=>p.classList.add('oculto'));document.getElementById(id).classList.remove('oculto');panelActual=id;actualizarPantalla()}function ver(id){if(id===panelActual)return;mostrarPanel(id);history.pushState({panel:id},'','#'+id)}
 async function cargarTodo(){setSync('Cargando datos...');const [p,c,co,u,cat,gcat,gh,pg]=await Promise.all([db.from('despensa_productos').select('*').order('nombre'),db.from('despensa_compras').select('*').order('fecha',{ascending:false}).limit(5000),db.from('despensa_consumos').select('*').order('fecha',{ascending:false}).limit(500),db.from('despensa_usuarios').select('*').order('usuario'),db.from('despensa_categorias').select('*').order('nombre'),db.from('home_gastos_categorias').select('*').order('nombre'),db.from('home_gastos').select('*, home_gastos_categorias(nombre, icono)').eq('activo',true).order('fecha_proximo_pago',{ascending:true}),db.from('home_gastos_pagos').select('*').order('fecha_pago',{ascending:false}).limit(1000)]);if(p.error||c.error||co.error||u.error){alert('Error cargando datos');console.log(p.error,c.error,co.error,u.error,cat.error);return}productos=p.data||[];compras=c.data||[];consumos=co.data||[];usuarios=u.data||[];categorias=cat.error?[]:(cat.data||[]);gastosCategorias=gcat.error?[]:(gcat.data||[]);gastosHogar=gh.error?[]:(gh.data||[]);pagosHogar=pg.error?[]:(pg.data||[]);actualizarPantalla();setSync('Estamos en línea 😊')}async function auditar(accion,detalle,datos={}){try{await db.from('despensa_auditoria').insert({usuario:sesion?.usuario||'',accion,detalle,datos})}catch(e){}}
