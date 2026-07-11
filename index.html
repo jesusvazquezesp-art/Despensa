@@ -30883,7 +30883,15 @@ body:not(.dark) #hc1378MenuPanel .hc1410-role{color:#64748b;}
     }catch(e){console.warn('Backup automático no creado',e); textoEstado('⚠️ No se pudo revisar/crear el respaldo automático: '+(e.message||e)); return false;}
   };
   window.hcCargarBackups=async function(){
-    const cont=document.getElementById('hcListaBackups'); if(!cont)return;
+
+    const cont=document.getElementById('hcListaBackups');
+    if(!cont) return;
+
+    if(typeof db==="undefined" || db===null){
+        cont.innerHTML='<p class="muted">Backups locales (pendiente de migrar).</p>';
+        return;
+    }
+
     try{
       cont.innerHTML='<p class="muted">Cargando backups...</p>';
       const r=await db.from('home_backups').select('id,tipo,version_app,total_productos,total_compras,total_consumos,total_gastos,creado_por,created_at').order('created_at',{ascending:false}).limit(30);
