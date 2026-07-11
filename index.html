@@ -10906,27 +10906,66 @@ body.dark .command-card .action-list .action-item{ background:rgba(15,23,42,.42)
       activo:true
     };
   }
-  async function requireDb(){
-    const c=dbx();
+  
+      async function requireDb(){
+
+    const c = dbx();
+
     if(!c){
-      setNota(false,"Supabase no está listo para el carrito.");
-      throw new Error("No hay conexión con Supabase. El carrito no maneja datos locales.");
+
+        setNota(false,"Servidor local activo.");
+
+        return null;
+
     }
+
     return c;
-  }
-  async function cargarCarritoOnline(){
-    if(cargando)return;
-    const c=await requireDb();
-    cargando=true;
+
+}
+      
+ 
+      async function cargarCarritoOnline(){
+
+    if(cargando) return;
+
+    const c = await requireDb();
+
+    if(!c){
+        setCarrito([]);
+        try{ if(typeof mostrarCarrito==="function") mostrarCarrito(); }catch(e){}
+        try{ if(typeof actualizarPanelCarritoRapido==="function") actualizarPanelCarritoRapido(); }catch(e){}
+        return;
+    }
+
+    cargando = true;
+
     try{
-      const {data,error}=await c.from(TABLE).select("*").eq("activo",true).eq("estado","pendiente").order("created_at",{ascending:true});
-      if(error)throw error;
-      setCarrito((data||[]).map(rowToItem));
-      try{ if(typeof mostrarCarrito==="function") mostrarCarrito(); }catch(e){}
-      try{ if(typeof actualizarPanelCarritoRapido==="function") actualizarPanelCarritoRapido(); }catch(e){}
-      setNota(true,(data||[]).length?"☁️ Carrito cargado desde Supabase 😊":"☁️ Carrito en línea vacío 😊");
-    }finally{cargando=false}
-  }
+
+        const {data,error}=await c
+            .from(TABLE)
+            .select("*")
+            .eq("activo",true)
+            .eq("estado","pendiente")
+            .order("created_at",{ascending:true});
+
+        if(error) throw error;
+
+        setCarrito((data||[]).map(rowToItem));
+
+        try{ if(typeof mostrarCarrito==="function") mostrarCarrito(); }catch(e){}
+        try{ if(typeof actualizarPanelCarritoRapido==="function") actualizarPanelCarritoRapido(); }catch(e){}
+
+        setNota(true,"☁️ Carrito cargado.");
+
+    }finally{
+
+        cargando = false;
+
+    }
+
+}
+      
+      
   async function existeProducto(productoId){
     if(!productoId)return null;
     const c=await requireDb();
