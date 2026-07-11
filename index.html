@@ -6268,7 +6268,66 @@ function guardarConfig(){
 function mostrarConfig(){configBox.classList.remove('oculto');loginBox.classList.add('oculto');app.classList.add('oculto')}
 async function reanudarSesion(){const guardada=localStorage.getItem('despensaSesion');if(!guardada||!db)return;try{const s=JSON.parse(guardada);const {data,error}=await db.from('despensa_usuarios').select('*').eq('id',s.id).eq('activo',true).maybeSingle();if(error||!data){localStorage.removeItem('despensaSesion');return}sesion=data;usuarioActivo.textContent=`${data.nombre||data.usuario}`;loginBox.classList.add('oculto');app.classList.remove('oculto');iniciarNavegacionApp();await cargarTodo()}catch(e){localStorage.removeItem('despensaSesion')}}
 async function login(){if(!db)return alert('Primero configura Supabase');const u=usuario.value.trim(),p=password.value.trim();const {data,error}=await db.from('despensa_usuarios').select('*').eq('usuario',u).eq('password',p).eq('activo',true).maybeSingle();if(error)return alert('Error Supabase: '+error.message);if(!data)return alert('Usuario o contraseña incorrectos');sesion=data;localStorage.setItem('despensaSesion',JSON.stringify({id:data.id,usuario:data.usuario,nombre:data.nombre,rol:data.rol}));usuarioActivo.textContent=`${data.nombre||data.usuario}`;loginBox.classList.add('oculto');app.classList.remove('oculto');iniciarNavegacionApp();await cargarTodo()}function cerrarSesion(){localStorage.removeItem('despensaSesion');sesion=null;app.classList.add('oculto');loginBox.classList.remove('oculto');history.replaceState(null,'',location.pathname)}function toggleDarkMode(){document.body.classList.toggle('dark');localStorage.setItem('darkDespensa',document.body.classList.contains('dark'))}function iniciarNavegacionApp(){panelActual='asistente';history.replaceState({panel:'asistente'},'','#asistente');mostrarPanel('asistente')}function mostrarPanel(id){document.querySelectorAll('.panel').forEach(p=>p.classList.add('oculto'));document.getElementById(id).classList.remove('oculto');panelActual=id;actualizarPantalla()}function ver(id){if(id===panelActual)return;mostrarPanel(id);history.pushState({panel:id},'','#'+id)}
-async function cargarTodo(){setSync('Cargando datos...');const [p,c,co,u,cat,gcat,gh,pg]=await Promise.all([db.from('despensa_productos').select('*').order('nombre'),db.from('despensa_compras').select('*').order('fecha',{ascending:false}).limit(5000),db.from('despensa_consumos').select('*').order('fecha',{ascending:false}).limit(500),db.from('despensa_usuarios').select('*').order('usuario'),db.from('despensa_categorias').select('*').order('nombre'),db.from('home_gastos_categorias').select('*').order('nombre'),db.from('home_gastos').select('*, home_gastos_categorias(nombre, icono)').eq('activo',true).order('fecha_proximo_pago',{ascending:true}),db.from('home_gastos_pagos').select('*').order('fecha_pago',{ascending:false}).limit(1000)]);if(p.error||c.error||co.error||u.error){alert('Error cargando datos');console.log(p.error,c.error,co.error,u.error,cat.error);return}productos=p.data||[];compras=c.data||[];consumos=co.data||[];usuarios=u.data||[];categorias=cat.error?[]:(cat.data||[]);gastosCategorias=gcat.error?[]:(gcat.data||[]);gastosHogar=gh.error?[]:(gh.data||[]);pagosHogar=pg.error?[]:(pg.data||[]);actualizarPantalla();setSync('Estamos en línea 😊')}async function auditar(accion,detalle,datos={}){try{await db.from('despensa_auditoria').insert({usuario:sesion?.usuario||'',accion,detalle,datos})}catch(e){}}
+
+
+async function cargarTodo(){
+
+    setSync("Cargando datos...");
+
+    try{
+
+        // PRODUCTOS DESDE EL SERVIDOR LOCAL
+        const r = await fetch("http://192.168.100.73:3000/productos");
+        const pj = await r.json();
+
+        productos = pj.ok ? (pj.data || []) : [];
+
+        // TODO LO DEMÁS SIGUE EN POSTGRES/SUPABASE POR EL MOMENTO
+        const [c,co,u,cat,gcat,gh,pg] = await Promise.all([
+
+            db.from("despensa_compras").select("*").order("fecha",{ascending:false}).limit(5000),
+
+            db.from("despensa_consumos").select("*").order("fecha",{ascending:false}).limit(500),
+
+            db.from("despensa_usuarios").select("*").order("usuario"),
+
+            db.from("despensa_categorias").select("*").order("nombre"),
+
+            db.from("home_gastos_categorias").select("*").order("nombre"),
+
+            db.from("home_gastos")
+              .select("*, home_gastos_categorias(nombre, icono)")
+              .eq("activo",true)
+              .order("fecha_proximo_pago",{ascending:true}),
+
+            db.from("home_gastos_pagos")
+              .select("*")
+              .order("fecha_pago",{ascending:false})
+              .limit(1000)
+
+        ]);
+
+        compras = c.data || [];
+        consumos = co.data || [];
+        usuarios = u.data || [];
+        categorias = cat.data || [];
+        gastosCategorias = gcat.data || [];
+        gastosHogar = gh.data || [];
+        pagosHogar = pg.data || [];
+
+        actualizarPantalla();
+
+        setSync("Servidor local conectado 🟢");
+
+    }catch(err){
+
+        console.error(err);
+
+        alert("No pude conectar con el servidor local.");
+
+    }
+
+}
 function limpiarProductoForm(){nombreProducto.value='';categoriaProducto.value='';tipoControlProducto.value='mensual';cantidadProducto.value='';unidadProducto.value='';minimoProducto.value='';precioProducto.value='';tiendaPreferida.value='';notasProducto.value='';limpiarFarmaciaForm();fotoProducto.value='';fotoProductoBase64='';previewProducto.src='';previewProducto.classList.add('oculto');editandoId=null;btnProducto.textContent='➕ Agregar producto';btnCancelar.classList.add('oculto')}function cancelarEdicion(){limpiarProductoForm()}async function guardarProducto(){const item={nombre:nombreProducto.value.trim(),categoria:categoriaProducto.value.trim(),tipo_control:tipoControlProducto.value,perecedero:tipoControlProducto.value==='semanal',dias_cobertura:tipoControlProducto.value==='semanal'?7:30,cantidad:Number(cantidadProducto.value||0),unidad:unidadProducto.value.trim()||'pza',minimo:Number(minimoProducto.value||0),precio:Number(precioProducto.value||0),tienda_preferida:tiendaPreferida.value.trim(),notas:combinarNotasFarmacia(notasProducto.value.trim()),foto:fotoProductoBase64,actualizado:new Date().toISOString()};if(!item.nombre)return alert('Falta el nombre del producto');const clave=normalizarProductoNombre(item.nombre);const existente=productos.find(p=>normalizarProductoNombre(p.nombre)===clave && String(p.id)!==String(editandoId||''));if(existente){const msg=`Ya existe un producto llamado "${existente.nombre}".
 
 Para evitar duplicados, HomeControl no creará otro.
